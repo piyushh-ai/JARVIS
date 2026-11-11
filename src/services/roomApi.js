@@ -2,7 +2,7 @@ import apiClient, { cleanParams } from "@/lib/api/client";
 
 export async function getRooms(filters = {}, config = {}) {
   const params = cleanParams({
-    ownerId: filters.ownerId,
+    homeId: filters.homeId,
   });
   const response = await apiClient.get("/rooms", { ...config, params });
   return response?.data ?? [];

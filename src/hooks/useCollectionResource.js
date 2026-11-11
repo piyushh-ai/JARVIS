@@ -203,6 +203,20 @@ export function useCollectionResource({
     [api, invalidatePendingFetches]
   );
 
+  const prependItem = useCallback((created) => {
+    if (!mountedRef.current || !created?._id) return;
+    setItems((prev) => [created, ...prev]);
+    setLastFetchedAt(Date.now());
+  }, []);
+
+  const replaceItem = useCallback((updated) => {
+    if (!mountedRef.current || !updated?._id) return;
+    setItems((prev) =>
+      prev.map((entry) => (entry._id === updated._id ? updated : entry))
+    );
+    setLastFetchedAt(Date.now());
+  }, []);
+
   return {
     items,
     loading,
@@ -216,5 +230,8 @@ export function useCollectionResource({
     createItem,
     updateItem,
     deleteItem,
+    prependItem,
+    replaceItem,
+    setMutationError,
   };
 }

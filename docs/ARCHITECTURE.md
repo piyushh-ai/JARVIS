@@ -24,7 +24,12 @@ jarvis/
 ├── src/
 │   ├── app/
 │   │   ├── api/
-│   │   │   ├── commands/           # Dev-only Command Queue Route Handlers (403 in production)
+│   │   │   ├── auth/               # User registration, login, logout & session lookup
+│   │   │   │   ├── login/route.js
+│   │   │   │   ├── logout/route.js
+│   │   │   │   ├── me/route.js
+│   │   │   │   └── register/route.js
+│   │   │   ├── commands/           # Authenticated Home-scoped Command Queue Route Handlers
 │   │   │   │   ├── route.js
 │   │   │   │   └── [id]/
 │   │   │   │       └── route.js
@@ -41,54 +46,79 @@ jarvis/
 │   │   │   │   └── status/route.js
 │   │   │   ├── health/
 │   │   │   │   └── route.js        # Live MongoDB health check route handler
-│   │   │   ├── rooms/              # Room collection & item CRUD Route Handlers
+│   │   │   ├── homes/              # Multi-Home workspace & membership Route Handlers
+│   │   │   │   ├── route.js
+│   │   │   │   ├── switch/route.js
+│   │   │   │   └── [id]/members/
+│   │   │   │       ├── route.js
+│   │   │   │       └── [memberId]/route.js
+│   │   │   ├── rooms/              # Home-scoped Room CRUD Route Handlers
 │   │   │   │   ├── route.js
 │   │   │   │   └── [id]/
 │   │   │   │       └── route.js
-│   │   │   └── devices/            # Device collection & item CRUD Route Handlers
+│   │   │   └── devices/            # Home-scoped Device CRUD & Toggle Route Handlers
 │   │   │       ├── route.js
 │   │   │       └── [id]/
-│   │   │           └── route.js
+│   │   │           ├── route.js
+│   │   │           └── toggle/route.js
+│   │   ├── login/page.js           # Server-gated Sign In view
+│   │   ├── register/page.js        # Server-gated Account & Default Home creation view
 │   │   ├── globals.css             # Global design system tokens & HUD layers
 │   │   ├── layout.js               # Root layout, metadata, and self-hosted fonts
-│   │   └── page.js                 # Mobile-first dashboard entry page
+│   │   └── page.js                 # Protected Server Component gate rendering DashboardClient
 │   ├── components/                 # Reusable layout, dashboard, and UI primitives
 │   ├── features/                   # Domain modules
-│   │   ├── devices/                # MongoDB-backed Device Management UI
-│   │   │   ├── DeviceFormModal.jsx
-│   │   │   └── DeviceManagementSection.jsx
+│   │   ├── auth/                   # Shared HUD authentication form view
+│   │   ├── controllers/            # Authenticated ESP32 Provisioning & One-Time Token UI
+│   │   │   ├── ControllerManagementSection.jsx
+│   │   │   └── ControllerProvisionModal.jsx
+│   │   ├── dashboard/              # Client dashboard shell with Home switcher & Logout
+│   │   ├── devices/                # MongoDB-backed Device Management & Toggle UI
 │   │   ├── rooms/                  # MongoDB-backed Room Management UI
-│   │   │   ├── RoomFormModal.jsx
-│   │   │   └── RoomManagementSection.jsx
 │   │   ├── assistant/
 │   │   └── automation/
-│   ├── hooks/                      # Client React hooks for API state & CRUD
+│   ├── hooks/                      # Client React hooks for auth & CRUD
+│   │   ├── useAuth.js
 │   │   ├── useCollectionResource.js
+│   │   ├── useControllers.js
 │   │   ├── useDevices.js
 │   │   └── useRooms.js
 │   ├── lib/
 │   │   ├── api/
-│   │   │   └── client.js           # Reusable Axios instance & ApiError normalizer
+│   │   │   └── client.js           # Reusable Axios instance (withCredentials) & ApiError normalizer
+│   │   ├── auth/                   # Auth crypto, DB session cookies, and authorization guards
+│   │   │   ├── guards.js
+│   │   │   ├── password.js
+│   │   │   └── session.js
 │   │   ├── db/
 │   │   │   └── connect.js          # Cached Mongoose connection utility
 │   │   ├── utils/                  # Shared API response, rate limit, & validation helpers
 │   │   │   ├── apiResponse.js
-│   │   │   ├── rateLimit.js        # Serverless-safe sliding-window rate limiter
+│   │   │   ├── rateLimit.js        # Distributed MongoDB-backed fixed-window rate limiter
 │   │   │   └── validation.js
 │   │   └── motion.js               # GSAP reduced-motion and pointer capability helpers
 │   ├── models/                     # Mongoose database schemas & models
-│   │   ├── Command.js              # Hardware command queue, leases, TTL & idempotency
+│   │   ├── Command.js              # Hardware command queue, homeId scope, leases, TTL & idempotency
 │   │   ├── Controller.js           # Physical ESP32 identity, hashed tokens & relayConfig
-│   │   ├── User.js                 # User profile, preferences, optional auth hash
-│   │   ├── Room.js                 # Multi-room definitions scoped by ownerId
-│   │   └── Device.js               # Smart devices with desired vs reported state
+│   │   ├── Home.js                 # Multi-user Home workspaces and owner/admin/member roles
+│   │   ├── RateLimit.js            # Distributed fixed-window counters with TTL expiry
+│   │   ├── Session.js              # Hashed HTTP-only session tokens with TTL & revocation
+│   │   ├── User.js                 # User profile, role/status, scrypt passwordHash & currentHomeId
+│   │   ├── Room.js                 # Smart rooms scoped by homeId & ownerId
+│   │   └── Device.js               # Smart devices scoped by homeId with desired vs reported state
+│   ├── scripts/
+│   │   └── migrate-legacy-home.mjs # Safe legacy ownerId/unscoped-data migration utility
 │   ├── services/                   # Client HTTP API services & server DB services
-│   │   ├── commandService.js       # Backend Command queue, lifecycle & lease claims
-│   │   ├── deviceApi.js            # Frontend Axios service for /api/devices
-│   │   ├── deviceService.js        # Backend Mongoose service for Device operations
-│   │   ├── hardwareService.js      # Controller auth, provisioning, heartbeat & status
+│   │   ├── authApi.js              # Frontend Axios service for /api/auth/* & /api/homes*
+│   │   ├── authService.js          # Backend User/Session/Home registration & RBAC services
+│   │   ├── commandService.js       # Backend Command queue, Home checks & lease claims
+│   │   ├── controllerApi.js        # Frontend Axios service for /api/esp32/controllers*
+│   │   ├── deviceApi.js            # Frontend Axios service for /api/devices & toggle
+│   │   ├── deviceService.js        # Backend Mongoose service for Home-scoped Device CRUD & toggle
+│   │   ├── hardwareService.js      # Home-scoped Controller provisioning, machine auth & telemetry
 │   │   ├── roomApi.js              # Frontend Axios service for /api/rooms
-│   │   └── roomService.js          # Backend Mongoose service for Room operations
+│   │   └── roomService.js          # Backend Mongoose service for Home-scoped Room CRUD
+│   ├── proxy.js                    # Optimistic unauthenticated redirect on / -> /login
 │   └── types/                      # Shared type/schema definitions directory
 ├── docs/
 │   ├── ROADMAP.md          # Planned milestones and task tracking
@@ -104,7 +134,7 @@ jarvis/
 - **Source directory (`src/`):** Application code lives under `src/`, with the `@/*` path alias mapped to `./src/*` in `jsconfig.json`.
 - **Next.js features (`next.config.mjs`):** `cacheComponents`, `partialPrefetching`, and `experimental.agentFeedback` are enabled alongside Turbopack CSS handling.
 - **Environment variables:** Copy `.env.example` to `.env.local` for local overrides; `.env*` files except `.env.example` are gitignored.
-- **Database & API status:** `src/lib/db/connect.js`, `src/app/api/{health,rooms,devices,commands,esp32}`, `src/lib/utils/{apiResponse,rateLimit,validation}.js`, `src/services/{roomService,deviceService,commandService,hardwareService}.js`, `src/models/{User,Room,Device,Command,Controller}.js`, and live frontend dashboard integration (`useRooms`, `useDevices`) are implemented and verified against MongoDB Atlas. `/api/esp32/*` endpoints authenticate every request via `X-Device-Id` + hashed Bearer tokens (`Controller`) or `X-Admin-Key` (`JARVIS_ADMIN_SECRET`); `/api/commands*` endpoints return `403` in `NODE_ENV === "production"` until user sessions land; user auth on `/api/rooms*` + `/api/devices*`, dashboard command auto-enqueue wiring, and ESP32 C++ firmware remain pending.
+- **Database & API status:** `src/lib/db/connect.js`, `src/app/api/{health,auth,homes,rooms,devices,commands,esp32}`, `src/lib/auth/{password,session,guards}.js`, `src/lib/utils/{apiResponse,rateLimit,validation}.js`, `src/services/{authService,roomService,deviceService,commandService,hardwareService}.js`, `src/models/{User,Session,Home,RateLimit,Room,Device,Command,Controller}.js`, authenticated Dashboard Controller Provisioning UI, and Toggle-to-Command Queue wiring are implemented and verified against MongoDB Atlas. `/api/esp32/controllers*` uses authenticated Home `owner`/`admin` sessions (no client admin secrets), `/api/esp32/{heartbeat,commands/*,status}` uses `X-Device-Id` + hashed Bearer tokens, and physical `ESP32-WROOM-32` C++ firmware remains pending.
 
 ---
 
@@ -162,34 +192,35 @@ Global CSS avoids heavy keyframe animations and conflicting CSS `transform` tran
 
 ## Dashboard Component Architecture
 
-The mobile-first dashboard (`src/app/page.js`) connects layout, HUD, Room Management, and Device Management components to live MongoDB Atlas CRUD APIs via the Step 15 client hooks (with ESP32 hardware actuation, AI assistant, and authentication remaining pending):
+The protected dashboard (`src/app/page.js` -> `src/features/dashboard/DashboardClient.jsx`) connects layout, HUD, Room Management, Device Management, and ESP32 Controller Provisioning components to MongoDB Atlas APIs via authenticated Home-scoped client hooks:
 
 ```text
-src/app/page.js (Live Hook Coordinator: useDevices + useRooms)
-├── components/layout/Header.jsx
+src/app/page.js (<Suspense> session gate -> DashboardClient: useAuth + useDevices + useRooms + useControllers)
+├── components/layout/Header.jsx (Home Switcher, Create Home, Role Badge, Logout)
 ├── components/dashboard/AICore.jsx
 ├── components/dashboard/RoomOverview.jsx
 ├── features/rooms/RoomManagementSection.jsx
 │   └── features/rooms/RoomFormModal.jsx (Create / Edit Room)
 ├── features/devices/DeviceManagementSection.jsx
-│   ├── components/dashboard/DeviceCard.jsx (MongoDB devices)
-│   └── features/devices/DeviceFormModal.jsx (Create / Edit Device)
+│   ├── components/dashboard/DeviceCard.jsx (MongoDB devices + Toggle -> Command Queue)
+│   └── features/devices/DeviceFormModal.jsx (Create / Edit Device + ESP32 Relay #1 pairing)
+├── features/controllers/ControllerManagementSection.jsx
+│   └── features/controllers/ControllerProvisionModal.jsx (Relay #1 Setup + One-Time Token Reveal)
 ├── components/layout/BottomNav.jsx
 └── lib/motion.js (Motion capability helpers)
 ```
 
 ### Component Responsibilities
 
-- **`src/app/page.js`:** Fetches `allDevices` via `useDevices()` and `rooms` via `useRooms()` once with zero mock data, computes unified `dashboardSummary` (`totalRooms`, `totalDevices`, `desiredOnCount`, `typeCounts`, `connectionCounts`, `reportedCounts`, `devicesByRoom`), derives `effectiveFilterRoomId` to auto-clear stale filters if a selected room disappears after refresh, derives client-only `lastSyncedAt` to avoid SSR hydration mismatches, resets active room filters if the filtered room is deleted, exposes coordinated `handleRefreshAll`, animates shell landmarks on mount, and arranges the 12-column responsive layout grid (`AICore` + `RoomOverview` on the left; `RoomManagementSection` + `DeviceManagementSection` on the right).
-- **`src/components/layout/Header.jsx`:** Compact sticky HUD header displaying the `JARVIS` wordmark, `ROOM OS · LIVE DB` subtitle, live backend sync state (`API Ready`, `Syncing`, `Offline`), an accessible manual dashboard refresh button, and a disabled profile preview button.
+- **`src/features/dashboard/DashboardClient.jsx`:** Coordinates `useAuth`, `useDevices({ homeId })`, `useRooms({ homeId })`, and `useControllers({ homeId })`, derives live overview summaries, wires `toggleDevice` (`POST /api/devices/[id]/toggle`) and controller revocation device refreshes, and renders Room, Device, and Controller sections inside the responsive HUD grid.
+- **`src/components/layout/Header.jsx`:** Compact sticky HUD header displaying active `Home` name & role, backend sync status (`API Ready`, `Syncing`, `Offline`), Home switcher/creator menu, manual refresh, and `Logout`.
 - **`src/components/layout/BottomNav.jsx`:** Fixed bottom navigation bar with safe-area padding and floating dock styling at `md+`. Only `Home` (`/`) is interactive; `Assistant`, `Automation`, and `Settings` render as disabled placeholders.
 - **`src/components/dashboard/AICore.jsx`:** Hero circular HUD centerpiece with concentric cyan/blue rings, stationary `JARVIS` branding, `SYSTEM STANDBY` / `SYNC ERROR` indicator, `{totalRooms} Room(s)` and `{desiredOnCount}/{totalDevices} Desired ON` pills, and GSAP rotation/pulse/scan loops.
-- **`src/components/dashboard/RoomOverview.jsx`:** Live MongoDB-backed Dashboard & Room Overview card displaying `DB Synced` / `Syncing` / `Error` status, client sync timestamp, manual refresh button, `Total Rooms` / `Devices` / `Desired ON` totals, explicit `HW Online` / `Offline` / `Unknown` connection counts, separate `Reported State` breakdown, `Device Types Summary` (`light`, `fan`, `led`, `other`), grouped `Rooms Overview` listing all rooms (including `0 Devices` handling) with click-to-filter & smooth navigation to `#devices-section` and `#rooms-section`, plus loading, error+retry, and empty states.
-- **`src/features/rooms/RoomManagementSection.jsx`:** Anchored at `#rooms-section` (`scroll-mt-20`), consumes shared `devicesByRoom` (or falls back cleanly when standalone), displays all persisted rooms with name, description, accurate device count badge, associated device chips (`name` + `desiredState`), quick room filter toggle, loading/empty/retryable-error states, GSAP card entrance stagger, and two-step delete confirmation surfacing backend `409` protection whenever devices remain assigned.
-- **`src/features/rooms/RoomFormModal.jsx`:** Accessible modal form supporting room creation and editing (`name` required 1–80 chars, `description` optional 0–300 chars) with client validation and backend `ApiError` feedback.
-- **`src/components/dashboard/DeviceCard.jsx`:** Displays a persisted MongoDB device (`name`, `type`, resolved `roomName`, `connectionStatus`, `desiredState`, `reportedState`, optional `esp32DeviceId`/`relayNumber`), keeping `Desired State`, `Reported State`, and `Connection Status` visually and textually separate (reserving active cyan glow strictly for confirmed `reportedState === "on"`), accessible `desiredState` switch (`aria-pressed`), inline delete confirmation, Edit/Delete actions, and GSAP micro-interactions.
-- **`src/features/devices/DeviceManagementSection.jsx`:** Anchored at `#devices-section` (`scroll-mt-20`), renders room/type filter controls, refresh/add buttons, success/error feedback banners, loading skeletons, retryable error panel, empty states, staggered card animations, and `DeviceFormModal`.
-- **`src/features/devices/DeviceFormModal.jsx`:** Accessible modal form supporting both device creation and editing with client-side validation (required name/room, integer relay 1–32), backend error surfacing, and explicit messaging that `desiredState` records MongoDB intent until ESP32 sync exists.
+- **`src/components/dashboard/RoomOverview.jsx`:** Live MongoDB-backed Dashboard & Room Overview card displaying `DB Synced` / `Syncing` / `Error` status, client sync timestamp, manual refresh button, `Total Rooms` / `Devices` / `Desired ON` totals, explicit `HW Online` / `Offline` / `Unknown` connection counts, separate `Reported State` breakdown, `Device Types Summary`, and click-to-filter room groups.
+- **`src/features/rooms/RoomManagementSection.jsx` & `RoomFormModal.jsx`:** Home-scoped room management (`owner`/`admin` edits, `409` non-empty room delete guard).
+- **`src/components/dashboard/DeviceCard.jsx` & `DeviceManagementSection.jsx`:** Displays persisted Home devices (`Desired State`, independent `Reported State`, `Connection Status`, paired ESP32 & relay `#` or explicit `Unmapped (No ESP32)` state). Clicking the toggle switch calls `POST /api/devices/[id]/toggle` with a per-click `idempotencyKey`, showing pending Command queue feedback or clear rejection messages without altering `reportedState`.
+- **`src/features/devices/DeviceFormModal.jsx`:** Modal for creating/editing Home devices with a `<select>` of registered non-revoked ESP32 controllers in the active Home, duplicate relay collision checks, and Relay #1 single-channel initial test guidance.
+- **`src/features/controllers/ControllerManagementSection.jsx` & `ControllerProvisionModal.jsx`:** Displays registered Home ESP32 controllers (`name`, `esp32DeviceId`, `tokenPrefix`, `lastSeen`, `firmwareVersion`, Relay #1 config, mapped device pills, Online/Offline/Awaiting Heartbeat/Revoked badges), enables `owner`/`admin` provisioning (single Relay Channel 1 without auto-configuring 8 channels or assuming HIGH/LOW polarity), token rotation, and revocation, and holds newly issued `rawToken` values strictly in ephemeral React state inside the One-Time Token Reveal/Copy screen until dismissed.
 - **`src/lib/motion.js`:** Minimal shared helpers (`prefersReducedMotion`, `supportsHover`) preventing duplicated media-query checks across animated components.
 
 ---
@@ -213,9 +244,9 @@ JARVIS implements its backend inside the existing Next.js App Router using **Nex
 - **`src/models/`:** Mongoose database models (`User.js`, `Room.js`, `Device.js`, `Command.js`, `Controller.js`) defining persistent MongoDB schemas, validation, and indexes outside route handlers, guarded via `mongoose.models.<Name> || mongoose.model(...)` to prevent `OverwriteModelError`.
 - **`src/services/`:**
   - `roomService.js`: Room CRUD (`listRooms`, `createRoom`, `getRoomById`, `updateRoomById`, `deleteRoomById`), enforcing safe deletion (`409 Conflict` if `Device.countDocuments({ roomId }) > 0`).
-  - `deviceService.js`: Device CRUD (`listDevices`, `createDevice`, `getDeviceById`, `updateDeviceById`, `deleteDeviceById`), validating referenced `Room` existence, inheriting `ownerId` from the verified room, keeping hardware-owned telemetry (`reportedState`, `connectionStatus`, `lastSeen`) read-only via public CRUD, and never equating `desiredState` updates with physical relay actuation.
-  - `commandService.js`: Command Queue & Lifecycle domain service implementing `assertDevOnlyCommandApiAccess()`, `enqueueCommand()`, `expireStaleCommands()`, `listCommands()`, `getCommandById()`, `claimPendingCommands()` (atomic `findOneAndUpdate` `15s` leases, max `3` attempts), and `acknowledgeCommand()` (enforces target ownership `403`, relay matching `400`, blocks expired/terminal double-ACKs `409`, and updates `Device.reportedState` + `connectionStatus` only on verified hardware results).
-  - `hardwareService.js`: Controller provisioning/list/rotation/revocation (`assertAdminProvisionAccess` fail-closed via `JARVIS_ADMIN_SECRET` timing-safe verify), constant-time ESP32 token auth (`authenticateEsp32Request` via `X-Device-Id` + Bearer token + non-loopback HTTPS enforcement + rate limits), `recordHeartbeat`, and `reportDeviceStatus`.
+  - `deviceService.js`: Home-scoped Device CRUD (`listDevices`, `createDevice`, `getDeviceById`, `updateDeviceById`, `deleteDeviceById`) plus `toggleDeviceById()` and `assertHardwareMappingAllowed()`, validating room and controller same-Home ownership, blocking cross-Home (`403`), unprovisioned (`404`), revoked (`409`), and duplicate relay mappings (`409`), enforcing `member` edits to `desiredState` only, and keeping `reportedState` strictly hardware-owned.
+  - `commandService.js`: Home-scoped Command Queue & Lifecycle service implementing `enqueueCommand()` (verifying active controller ownership before queueing), `expireStaleCommands()`, `listCommands()`, `getCommandById()`, `claimPendingCommands()` (`15s` atomic leases, max `3` attempts), and `acknowledgeCommand()`.
+  - `hardwareService.js`: Home-scoped Controller provisioning/listing/rotation/revocation (`listControllers`, `provisionController`, `rotateControllerToken`, `revokeController` scoped to verified `homeId`) paired with separate machine-to-machine ESP32 auth (`authenticateEsp32Request` via `X-Device-Id` + peppered Bearer token + non-loopback HTTPS enforcement + distributed rate limits), `recordHeartbeat`, and `reportDeviceStatus`.
 
 ### Database Models & Relationships (`src/models/`)
 
@@ -332,20 +363,20 @@ sequenceDiagram
   participant ESP as "ESP32-WROOM-32 (Wi-Fi TLS)"
   participant Relay as "2x 4-Channel Relays (CH 1-8)"
 
-  Note over Admin,ESP: Provisioning (Pre-boot, admin authenticated)
-  Admin->>API: POST /api/esp32/controllers
-  API->>DB: Save Controller with hashed token (SHA-256 + pepper)
-  API-->>Admin: Return rawToken ONCE (never stored plaintext)
+  Note over Admin,ESP: Provisioning (Pre-boot, Home owner/admin browser session)
+  Admin->>API: POST /api/esp32/controllers (jarvis_session cookie)
+  API->>DB: Save Controller (homeId, ownerId) with hashed token (SHA-256 + pepper)
+  API-->>Admin: Return rawToken ONCE (ephemeral reveal UI, never stored in browser)
   Admin-->>ESP: Store esp32DeviceId + rawToken in NVS Flash
 
   Note over Admin,Relay: Runtime Command & Telemetry Flow
   ESP->>API: POST /api/esp32/heartbeat (Bearer token + X-Device-Id)
   API->>DB: Update Controller.lastSeen + Devices connectionStatus="online"
-  API-->>ESP: 200 OK (pendingCommandCount, heartbeatIntervalMs)
+  API-->>ESP: 200 OK (pendingCommandCount, recommendedPollMs)
 
-  Admin->>API: PATCH /api/devices/:id (desiredState="on")
-  API->>DB: Save desiredState="on", supersede stale pending, enqueue Command (pending)
-  API-->>Admin: 200 OK (desiredState="on", reportedState unchanged)
+  Admin->>API: POST /api/devices/:id/toggle (desiredState="on", idempotencyKey)
+  API->>DB: Verify active mapped Controller, supersede stale pending, enqueue Command, save desiredState="on"
+  API-->>Admin: 201 Created ({ device, command }, reportedState unchanged)
 
   ESP->>API: GET /api/esp32/commands/pending
   API->>DB: Expire overdue commands, atomic claim pending->processing (15s lease)
@@ -399,15 +430,16 @@ stateDiagram-v2
   3. Firmware checks `ttlRemainingMs > 0` using monotonic `millis()` (avoiding clock-skew failures) and caches the last `16` `commandId`s in a RAM ring buffer so network retry re-deliveries re-send ACK without re-switching relays.
   4. `acknowledgeCommand` rejects `expired` or already-finalized (`success`/`failed`) acknowledgements with `409 Conflict` and restricts completions to the matching `esp32DeviceId`/`deviceId`.
 
-### Implemented Hardware API Contracts (Step 24 Verified)
+### Implemented Hardware & Command API Contracts (Steps 24 & 24A Verified)
 
 All endpoints reuse `apiResponse.js` (`{ success, message, data? }` / `{ success, message, errors? }`):
 
 | Endpoint | Auth | Purpose | Status Codes |
 | --- | --- | --- | --- |
-| `GET / POST /api/esp32/controllers` | `X-Admin-Key` (`JARVIS_ADMIN_SECRET`) | List sanitized controllers or provision board returning `rawToken` once | `200`, `201`, `400`, `401`, `409`, `429`, `503` |
-| `POST /api/esp32/controllers/[id]/rotate` | `X-Admin-Key` (`JARVIS_ADMIN_SECRET`) | Rotate controller secret with optional overlap (`graceMinutes`) | `200`, `400`, `401`, `404`, `409`, `429`, `503` |
-| `POST /api/esp32/controllers/[id]/revoke` | `X-Admin-Key` (`JARVIS_ADMIN_SECRET`) | Revoke token hashes immediately & mark bound devices offline | `200`, `400`, `401`, `404`, `429`, `503` |
+| `GET / POST /api/esp32/controllers` | Session (`Home` member list; `owner`/`admin` provision) | List Home-scoped safe metadata or provision board returning `rawToken` ONCE | `200`, `201`, `400`, `401`, `403`, `409`, `429` |
+| `POST /api/esp32/controllers/[id]/rotate` | Session (`Home` `owner`/`admin`) | Rotate controller secret with optional overlap (`graceMinutes`), returns `rawToken` ONCE | `200`, `400`, `401`, `403`, `404`, `409` |
+| `POST /api/esp32/controllers/[id]/revoke` | Session (`Home` `owner`/`admin`) | Revoke token hashes immediately & mark bound Home devices offline | `200`, `400`, `401`, `403`, `404` |
+| `POST /api/devices/[id]/toggle` | Session (`Home` `owner`/`admin`/`member`) | Verify active mapped controller & relay, supersede stale pending, honor `idempotencyKey`, update `desiredState`, enqueue `Command` | `200`, `201`, `400`, `401`, `403`, `404`, `409` |
 | `POST /api/esp32/heartbeat` | Controller `X-Device-Id` + `Bearer <token>` | Update `Controller.lastSeen`/diagnostics, mark devices `online`, return `pendingCommandCount` | `200`, `400`, `401`, `403`, `429` |
 | `GET /api/esp32/commands/pending` | Controller `X-Device-Id` + `Bearer <token>` | Expire stale items & atomically lease pending commands (`limit` 1–16) | `200`, `400`, `401`, `403`, `429` |
 | `POST /api/esp32/commands/[commandId]/ack` | Controller `X-Device-Id` + `Bearer <token>` | Verify ownership (`403`), enforce lifecycle (`409`), & sync `Device.reportedState` | `200`, `400`, `401`, `403`, `404`, `409`, `429` |
@@ -495,15 +527,19 @@ Existing `Device` schema (`esp32DeviceId`, `relayNumber`, `desiredState`, `repor
 
 ### Security & Production Controls
 
-- **Transport & Auth:** Enforce HTTPS/TLS 1.2+ with CA verification on ESP32; keep User session auth strictly separate from hashed ESP32 controller Bearer tokens; block production deployment while pre-auth CRUD fallback exists.
-- **Rate Limiting & Payload Hygiene:** `rateLimit.js` enforces per-serverless-instance sliding-window caps on `/api/esp32/*` (`429 Too Many Requests` + `Retry-After`, swapping cleanly to Redis/Vercel WAF for global multi-region enforcement later), validates channels/actions against schema bounds, and emits sanitized JSON errors (`apiResponse.js`).
-- **Replay & Audit Trail:** Single-completion `commandId` machine + short `expiresAt` windows defeat replays; immutable command transitions (`Command` history + failed auth log entries) provide auditable diagnostics.
+- **User Auth & Session Integrity:** Passwords are salted (`16` random bytes) and hashed via `node:crypto` `scrypt` (`N=16384, r=8, p=1`), verified with `crypto.timingSafeEqual`. Sessions issue 256-bit opaque tokens stored as HMAC/SHA-256 digests in MongoDB `Session` documents (`revokedAt`, 7-day `expiresAt` TTL), transmitted solely via `HttpOnly`, `SameSite=Lax`, `Secure` (production) `jarvis_session` cookies.
+- **Authorization & IDOR Prevention:** User-facing routes (`/api/rooms*`, `/api/devices*`, `/api/commands*`, `/api/homes*`) ignore client-supplied `ownerId` and resolve access strictly through the authenticated user's verified `Home` memberships (`owner | admin | member`). Structural Room/Device mutations require `owner` or `admin`; `member` users may view Rooms/Devices, trigger Commands, and toggle `desiredState` only.
+- **CSRF & Rate Limiting:** Mutating browser routes validate `Sec-Fetch-Site`, `Origin`/`Referer` host equality, and non-form Content-Type headers. `RateLimit` provides atomic MongoDB fixed-window throttling across serverless instances (`login`, `register`, `/api/esp32/*`).
+- **Hardware / Human Auth Separation:** `/api/esp32/{heartbeat,commands/*,status}` strictly retains machine-to-machine `X-Device-Id` + peppered Bearer token auth, while controller provisioning and lifecycle endpoints (`/api/esp32/controllers*`) are unified on verified `jarvis_session` HTTP-only cookies and Home `owner`/`admin` authorization (`JARVIS_ADMIN_SECRET` is removed so no static admin secret exists on client or API).
+- **One-Time Token & Unassumed Polarity:** Provisioning/rotation generates `rawToken` server-side, persists only HMAC-SHA256 `tokenHash`, returns `rawToken` once inside an ephemeral modal React state (cleared immediately on close, never written to `localStorage`/`sessionStorage`), configures only Relay Channel 1 for initial hardware testing, and leaves `activeLevel: null` unless explicitly selected after bench verification.
+- **Route Protection & Legacy Migration:** `src/proxy.js` redirects cookie-less `/` visits to `/login?next=%2F`; Server Components on `/`, `/login`, and `/register` verify real database sessions inside `<Suspense>` boundaries (`cacheComponents: true`). Existing pre-auth records can be linked safely via `src/scripts/migrate-legacy-home.mjs --email=<registered-email>`.
 
 ### Implementation Dependency Order (Steps 22–26)
 
-1. **Step 22 — Command Queue + MongoDB Implementation *(Implemented)*:** `Command` Mongoose schema (`src/models/Command.js`), `commandService.js` (enqueue/supersede, expiry, atomic claim leases, lifecycle transitions, device telemetry ACK separation), and dev-only `/api/commands` & `/api/commands/[id]` endpoints (locked `403` in production).
-2. **Step 23 — Vercel Deployment Readiness Audit *(Implemented)*:** Audited Next.js serverless routes, static bundle secret exclusion, env isolation, and hardened `connectDB()` stale-socket reconnection (`maxPoolSize: 10`).
-3. **Step 24 — ESP32 Backend Communication API Implementation *(Implemented)*:** Implemented `Controller` model (`src/models/Controller.js`), `hardwareService.js` (`X-Device-Id` + hashed Bearer token auth, constant-time compare, `JARVIS_ADMIN_SECRET` fail-closed provisioning/rotation/revocation), `rateLimit.js` (`429` burst guard per serverless instance), and `/api/esp32/{controllers*,heartbeat,commands/pending,commands/[commandId]/ack,status}` routes.
-4. **Next — User Auth, Admin Provisioning UI & Dashboard Command Wiring:** Add user login/session scoping (`ownerId` on `/api/rooms*`, `/api/devices*`, `/api/commands*`), wire dashboard/device state changes to enqueue `Command` records, add Admin Provisioning UI + Command lifecycle telemetry UI, and add cross-instance distributed rate limiting (Upstash/Vercel WAF) + heartbeat staleness sweep if needed.
-5. **Following — Bench GPIO Verification & ESP32-WROOM-32 Firmware:** Verify relay active polarity & safe GPIO pinout on physical `2 × 4-channel` relays, then implement modular firmware (Wi-Fi TLS, NVS secrets, safe boot init, heartbeat, atomic poll/ack, RAM deduplication, boot/status sync).
-6. **Final Hardware QA — Hardware-in-the-Loop QA & MQTT Optionality:** Verify full live Vercel-to-ESP32-to-relay execution, Wi-Fi/power/timeout/expiry failure recovery, and optional MQTT/WebSocket transport adapter.
+1. **Step 22 — Command Queue + MongoDB Implementation *(Implemented)*:** `Command` Mongoose schema (`src/models/Command.js`), `commandService.js`, and Command Queue endpoints.
+2. **Step 23 — Vercel Deployment Readiness Audit *(Implemented)*:** Audited Next.js serverless routes, static bundle secret exclusion, env isolation, and `connectDB()` connection pooling (`maxPoolSize: 10`).
+3. **Step 24 — ESP32 Backend Communication API Implementation *(Implemented)*:** Implemented `Controller` model (`src/models/Controller.js`), `hardwareService.js` (`X-Device-Id` + hashed Bearer token auth, constant-time compare, provisioning/rotation/revocation), and `/api/esp32/*` routes.
+4. **Multi-User Authentication & Home Authorization *(Implemented)*:** Implemented `Session`, `Home`, and `RateLimit` models, `scrypt` password hashing, HTTP-only DB session cookies, `/api/auth/*` + `/api/homes*` APIs, IDOR + RBAC enforcement across `/api/rooms*`, `/api/devices*`, and `/api/commands*`, protected `/` + `/login` + `/register` routes, distributed MongoDB rate limiting, and `src/scripts/migrate-legacy-home.mjs`.
+5. **Step 24A — ESP32 Controller Provisioning UI + Command Wiring *(Implemented)*:** Resolved provisioning onto authenticated Home `owner`/`admin` sessions, built `ControllerManagementSection` & `ControllerProvisionModal` (Relay Channel 1 config, unassumed polarity, one-time token reveal/copy), enforced same-Home controller + unique relay pairing in `DeviceFormModal` & `deviceService.js`, wired `POST /api/devices/[id]/toggle` (`useDevices().toggleDevice`) to supersede stale commands & enqueue `pending` `Command` items while keeping `reportedState` ACK-driven, and verified via lint, build, bundle scan, and live `next start` + MongoDB Atlas security/E2E suites.
+6. **Next — Bench GPIO Verification & ESP32-WROOM-32 Firmware:** Verify relay active polarity & safe GPIO pinout on physical hardware, then implement modular C++ firmware (Wi-Fi TLS, NVS secrets, safe boot init, heartbeat, atomic poll/ack, RAM deduplication, boot/status sync).
+7. **Final Hardware QA — Hardware-in-the-Loop QA & MQTT Optionality:** Verify full live Vercel-to-ESP32-to-relay execution, Wi-Fi/power/timeout/expiry failure recovery, and optional MQTT/WebSocket transport adapter.

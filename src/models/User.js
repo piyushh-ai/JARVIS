@@ -22,6 +22,23 @@ const userSchema = new mongoose.Schema(
       select: false,
       default: undefined,
     },
+    role: {
+      type: String,
+      enum: ["admin", "member"],
+      required: true,
+      default: "member",
+    },
+    status: {
+      type: String,
+      enum: ["active", "suspended"],
+      required: true,
+      default: "active",
+    },
+    currentHomeId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Home",
+      default: null,
+    },
     preferences: {
       theme: {
         type: String,

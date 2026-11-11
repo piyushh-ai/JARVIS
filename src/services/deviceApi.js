@@ -2,6 +2,7 @@ import apiClient, { cleanParams } from "@/lib/api/client";
 
 export async function getDevices(filters = {}, config = {}) {
   const params = cleanParams({
+    homeId: filters.homeId,
     roomId: filters.roomId,
     type: filters.type,
   });
@@ -25,6 +26,15 @@ export async function createDevice(payload, config = {}) {
 export async function updateDevice(id, payload, config = {}) {
   const response = await apiClient.patch(
     `/devices/${encodeURIComponent(id)}`,
+    payload,
+    config
+  );
+  return response?.data ?? null;
+}
+
+export async function toggleDevice(id, payload = {}, config = {}) {
+  const response = await apiClient.post(
+    `/devices/${encodeURIComponent(id)}/toggle`,
     payload,
     config
   );

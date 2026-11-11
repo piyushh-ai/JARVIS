@@ -20,7 +20,7 @@ const ROOM_RESOURCE_API = {
 /**
  * Reusable hook for fetching and mutating smart rooms via /api/rooms.
  */
-export function useRooms({ ownerId, autoFetch = true } = {}) {
+export function useRooms({ homeId, autoFetch = true } = {}) {
   const {
     items,
     loading,
@@ -36,7 +36,7 @@ export function useRooms({ ownerId, autoFetch = true } = {}) {
     deleteItem,
   } = useCollectionResource({
     api: ROOM_RESOURCE_API,
-    filters: { ownerId },
+    filters: { homeId },
     autoFetch,
   });
 

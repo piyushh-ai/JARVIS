@@ -22,6 +22,11 @@ const commandSchema = new mongoose.Schema(
       minlength: [1, "ESP32 device ID cannot be empty"],
       maxlength: [100, "ESP32 device ID cannot exceed 100 characters"],
     },
+    homeId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Home",
+      default: null,
+    },
     ownerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -114,7 +119,8 @@ const commandSchema = new mongoose.Schema(
 // Atomic claim queue index for ESP32 polling & stale-command expiry sweeps
 commandSchema.index({ esp32DeviceId: 1, status: 1, expiresAt: 1, createdAt: 1 });
 
-// Device command history & pending supersede lookups
+// Device & Home command history & pending supersede lookups
+commandSchema.index({ homeId: 1, status: 1, createdAt: -1 });
 commandSchema.index({ deviceId: 1, status: 1, createdAt: -1 });
 
 // Unique duplicate-submission guard when a non-empty string idempotencyKey is supplied

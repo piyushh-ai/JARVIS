@@ -7,11 +7,21 @@ import Device from "@/models/Device";
 import { ServiceError } from "@/lib/utils/apiResponse";
 import { enforceRateLimit, getClientIp } from "@/lib/utils/rateLimit";
 import {
+  assertValidObjectId,
   validateControllerProvisionPayload,
   validateEsp32StatusPayload,
   validateHeartbeatPayload,
 } from "@/lib/utils/validation";
 import { expireStaleCommands } from "@/services/commandService";
+
+function assertSameControllerHome(controller, homeId) {
+  if (!controller?.homeId || String(controller.homeId) !== String(homeId)) {
+    throw new ServiceError(
+      "Controller does not belong to your authorized home",
+      403
+    );
+  }
+}
 
 function timingSafeEqualStrings(a, b) {
   if (typeof a !== "string" || typeof b !== "string") return false;
@@ -65,36 +75,6 @@ function assertHttpsIfProxied(request) {
 }
 
 /**
- * Verifies admin/owner secret for controller provisioning, rotation, and revocation
- * using JARVIS_ADMIN_SECRET (fail-closed if unconfigured).
- */
-export function assertAdminProvisionAccess(request) {
-  enforceRateLimit(`admin:${getClientIp(request)}`, {
-    maxRequests: 30,
-    windowMs: 60000,
-  });
-
-  const expectedSecret = process.env.JARVIS_ADMIN_SECRET?.trim();
-  if (!expectedSecret) {
-    throw new ServiceError(
-      "Controller provisioning is disabled: JARVIS_ADMIN_SECRET is not configured",
-      503
-    );
-  }
-
-  const adminHeader = request.headers.get("x-admin-key")?.trim();
-  const authHeader = request.headers.get("authorization") || "";
-  const bearerSecret = authHeader.startsWith("Bearer ")
-    ? authHeader.slice(7).trim()
-    : "";
-
-  const provided = adminHeader || bearerSecret;
-  if (!provided || !timingSafeEqualStrings(provided, expectedSecret)) {
-    throw new ServiceError("Unauthorized controller admin request", 401);
-  }
-}
-
-/**
  * Authenticates every hardware /api/esp32/* request using X-Device-Id + Bearer token,
  * constant-time hash comparison, active status check, and per-device rate limiting.
  */
@@ -104,7 +84,7 @@ export async function authenticateEsp32Request(
 ) {
   assertHttpsIfProxied(request);
 
-  enforceRateLimit(`esp32_ip:${getClientIp(request)}`, {
+  await enforceRateLimit(`esp32_ip:${getClientIp(request)}`, {
     maxRequests: Math.max(maxRequests * 2, 120),
     windowMs,
   });
@@ -152,7 +132,7 @@ export async function authenticateEsp32Request(
     throw new ServiceError("Invalid or revoked ESP32 credentials", 401);
   }
 
-  enforceRateLimit(`esp32_dev:${controller.esp32DeviceId}`, {
+  await enforceRateLimit(`esp32_dev:${controller.esp32DeviceId}`, {
     maxRequests,
     windowMs,
   });
@@ -160,14 +140,30 @@ export async function authenticateEsp32Request(
   return sanitizeControllerDoc(controller);
 }
 
-export async function provisionController(payload) {
+export async function provisionController(
+  payload,
+  { homeId, ownerId } = {}
+) {
+  assertValidObjectId(homeId, "homeId");
+  assertValidObjectId(ownerId, "ownerId");
+
   const data = validateControllerProvisionPayload(payload);
   await connectDB();
+
+  const existing = await Controller.exists({ esp32DeviceId: data.esp32DeviceId });
+  if (existing) {
+    throw new ServiceError(
+      "An ESP32 controller with this esp32DeviceId already exists",
+      409
+    );
+  }
 
   const { rawToken, tokenHash, tokenPrefix } = generateRawControllerToken();
 
   const created = await Controller.create({
     ...data,
+    homeId,
+    ownerId,
     tokenHash,
     tokenPrefix,
     tokenVersion: 1,
@@ -180,9 +176,10 @@ export async function provisionController(payload) {
   };
 }
 
-export async function listControllers() {
+export async function listControllers({ homeId } = {}) {
+  assertValidObjectId(homeId, "homeId");
   await connectDB();
-  const list = await Controller.find().sort({ createdAt: -1 }).lean();
+  const list = await Controller.find({ homeId }).sort({ createdAt: -1 }).lean();
   return list.map(sanitizeControllerDoc);
 }
 
@@ -198,8 +195,10 @@ function buildControllerLookupQuery(idOrEspId) {
 
 export async function rotateControllerToken(
   idOrEspId,
-  { graceMinutes = 15, now = new Date() } = {}
+  { homeId, graceMinutes = 15, now = new Date() } = {}
 ) {
+  assertValidObjectId(homeId, "homeId");
+
   if (
     typeof graceMinutes !== "number" ||
     !Number.isInteger(graceMinutes) ||
@@ -219,6 +218,8 @@ export async function rotateControllerToken(
   if (!existing) {
     throw new ServiceError("Controller not found", 404);
   }
+  assertSameControllerHome(existing, homeId);
+
   if (existing.status === "revoked") {
     throw new ServiceError("Cannot rotate token for a revoked controller", 409);
   }
@@ -251,12 +252,22 @@ export async function rotateControllerToken(
   };
 }
 
-export async function revokeController(idOrEspId, { now = new Date() } = {}) {
+export async function revokeController(
+  idOrEspId,
+  { homeId, now = new Date() } = {}
+) {
+  assertValidObjectId(homeId, "homeId");
   const lookup = buildControllerLookupQuery(idOrEspId);
   await connectDB();
 
-  const updated = await Controller.findOneAndUpdate(
-    lookup,
+  const existing = await Controller.findOne(lookup).lean();
+  if (!existing) {
+    throw new ServiceError("Controller not found", 404);
+  }
+  assertSameControllerHome(existing, homeId);
+
+  const updated = await Controller.findByIdAndUpdate(
+    existing._id,
     {
       $set: {
         status: "revoked",
@@ -268,12 +279,8 @@ export async function revokeController(idOrEspId, { now = new Date() } = {}) {
     { returnDocument: "after" }
   ).lean();
 
-  if (!updated) {
-    throw new ServiceError("Controller not found", 404);
-  }
-
   const offlineRes = await Device.updateMany(
-    { esp32DeviceId: updated.esp32DeviceId },
+    { esp32DeviceId: updated.esp32DeviceId, homeId: updated.homeId },
     { $set: { connectionStatus: "offline", updatedAt: now } }
   );
 

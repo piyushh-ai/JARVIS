@@ -23,6 +23,11 @@ const deviceSchema = new mongoose.Schema(
       ref: "Room",
       required: [true, "Room reference is required"],
     },
+    homeId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Home",
+      default: null,
+    },
     ownerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -73,7 +78,9 @@ const deviceSchema = new mongoose.Schema(
   }
 );
 
-// Fast queries for user/room device lists and state filtering.
+// Fast queries for home/user/room device lists and state filtering.
+deviceSchema.index({ homeId: 1, roomId: 1 });
+deviceSchema.index({ homeId: 1, desiredState: 1 });
 deviceSchema.index({ ownerId: 1, roomId: 1 });
 deviceSchema.index({ roomId: 1, desiredState: 1 });
 

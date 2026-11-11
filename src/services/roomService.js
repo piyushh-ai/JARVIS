@@ -8,27 +8,39 @@ import {
   validateUpdateRoomPayload,
 } from "@/lib/utils/validation";
 
-export async function listRooms({ ownerId } = {}) {
-  const query = {};
-  if (ownerId) {
-    assertValidObjectId(ownerId, "ownerId");
-    query.ownerId = ownerId;
+function assertSameHome(doc, homeId, resourceLabel = "Room") {
+  if (!doc.homeId || String(doc.homeId) !== String(homeId)) {
+    throw new ServiceError(
+      `${resourceLabel} does not belong to your authorized home`,
+      403
+    );
   }
-
-  await connectDB();
-  return Room.find(query).sort({ createdAt: -1 }).lean();
 }
 
-export async function createRoom(payload) {
+export async function listRooms({ homeId } = {}) {
+  assertValidObjectId(homeId, "homeId");
+  await connectDB();
+  return Room.find({ homeId }).sort({ createdAt: -1 }).lean();
+}
+
+export async function createRoom(payload, { homeId, ownerId } = {}) {
+  assertValidObjectId(homeId, "homeId");
+  assertValidObjectId(ownerId, "ownerId");
+
   const roomData = validateCreateRoomPayload(payload);
   await connectDB();
 
-  const room = await Room.create(roomData);
+  const room = await Room.create({
+    ...roomData,
+    homeId,
+    ownerId,
+  });
   return room.toObject();
 }
 
-export async function getRoomById(id) {
+export async function getRoomById(id, { homeId } = {}) {
   assertValidObjectId(id, "room ID");
+  assertValidObjectId(homeId, "homeId");
   await connectDB();
 
   const room = await Room.findById(id).lean();
@@ -36,13 +48,21 @@ export async function getRoomById(id) {
     throw new ServiceError("Room not found", 404);
   }
 
+  assertSameHome(room, homeId, "Room");
   return room;
 }
 
-export async function updateRoomById(id, payload) {
+export async function updateRoomById(id, payload, { homeId } = {}) {
   assertValidObjectId(id, "room ID");
+  assertValidObjectId(homeId, "homeId");
   const updates = validateUpdateRoomPayload(payload);
   await connectDB();
+
+  const existing = await Room.findById(id).lean();
+  if (!existing) {
+    throw new ServiceError("Room not found", 404);
+  }
+  assertSameHome(existing, homeId, "Room");
 
   const updated = await Room.findByIdAndUpdate(
     id,
@@ -50,21 +70,19 @@ export async function updateRoomById(id, payload) {
     { returnDocument: "after", runValidators: true }
   ).lean();
 
-  if (!updated) {
-    throw new ServiceError("Room not found", 404);
-  }
-
   return updated;
 }
 
-export async function deleteRoomById(id) {
+export async function deleteRoomById(id, { homeId } = {}) {
   assertValidObjectId(id, "room ID");
+  assertValidObjectId(homeId, "homeId");
   await connectDB();
 
   const existing = await Room.findById(id).lean();
   if (!existing) {
     throw new ServiceError("Room not found", 404);
   }
+  assertSameHome(existing, homeId, "Room");
 
   const attachedDevices = await Device.countDocuments({ roomId: id });
   if (attachedDevices > 0) {
@@ -77,4 +95,3 @@ export async function deleteRoomById(id) {
   await Room.findByIdAndDelete(id);
   return existing;
 }
-

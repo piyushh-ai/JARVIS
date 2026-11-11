@@ -80,6 +80,7 @@ export function normalizeApiError(error) {
 const apiClient = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_BASE_URL || "/api",
   timeout: DEFAULT_TIMEOUT_MS,
+  withCredentials: true,
   headers: {
     "Content-Type": "application/json",
     Accept: "application/json",

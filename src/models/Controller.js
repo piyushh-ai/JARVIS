@@ -25,8 +25,8 @@ const relayChannelConfigSchema = new mongoose.Schema(
     },
     activeLevel: {
       type: String,
-      enum: ["LOW", "HIGH"],
-      default: "LOW",
+      enum: ["LOW", "HIGH", null],
+      default: null,
     },
     safeBootState: {
       type: String,
@@ -53,10 +53,15 @@ const controllerSchema = new mongoose.Schema(
       default: "",
       maxlength: [80, "Controller name cannot exceed 80 characters"],
     },
+    homeId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Home",
+      default: null,
+    },
     ownerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: [true, "Owner reference is required"],
+      default: null,
     },
     tokenHash: {
       type: String,
@@ -130,6 +135,8 @@ const controllerSchema = new mongoose.Schema(
   }
 );
 
+controllerSchema.index({ homeId: 1, createdAt: -1 });
+controllerSchema.index({ homeId: 1, esp32DeviceId: 1 });
 controllerSchema.index({ ownerId: 1, status: 1 });
 controllerSchema.index({ status: 1, lastSeen: 1 });
 

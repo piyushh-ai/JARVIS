@@ -83,7 +83,16 @@ export function handleApiError(error) {
         409
       );
     }
-    if (keys.includes("name") && keys.includes("ownerId")) {
+    if (keys.includes("email")) {
+      return errorResponse(
+        "Unable to complete registration with the provided credentials",
+        409
+      );
+    }
+    if (
+      keys.includes("name") &&
+      (keys.includes("homeId") || keys.includes("ownerId"))
+    ) {
       return errorResponse("A room with this name already exists", 409);
     }
     return errorResponse("Duplicate record already exists", 409);

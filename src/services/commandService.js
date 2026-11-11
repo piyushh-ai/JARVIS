@@ -1,5 +1,6 @@
 import { connectDB } from "@/lib/db/connect";
 import Command from "@/models/Command";
+import Controller from "@/models/Controller";
 import Device from "@/models/Device";
 import { ServiceError } from "@/lib/utils/apiResponse";
 import {
@@ -12,14 +13,10 @@ import {
 
 const COMMAND_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
-/**
- * Blocks unauthenticated public execution of command APIs in production
- * until user session and ESP32 token authentication land in Step 23.
- */
-export function assertDevOnlyCommandApiAccess() {
-  if (process.env.NODE_ENV === "production") {
+function assertSameHome(doc, homeId, resourceLabel = "Resource") {
+  if (!doc.homeId || String(doc.homeId) !== String(homeId)) {
     throw new ServiceError(
-      "Command endpoints are restricted in production until authentication is implemented",
+      `${resourceLabel} does not belong to your authorized home`,
       403
     );
   }
@@ -113,7 +110,11 @@ export async function expireStaleCommands({
  * Creates a pending hardware command after validating device existence,
  * relay mapping, action, expiration rules, and optional idempotencyKey.
  */
-export async function enqueueCommand(payload, { now = new Date() } = {}) {
+export async function enqueueCommand(
+  payload,
+  { homeId, ownerId, now = new Date() } = {}
+) {
+  assertValidObjectId(homeId, "homeId");
   const data = validateCreateCommandPayload(payload);
   await connectDB();
 
@@ -121,6 +122,7 @@ export async function enqueueCommand(payload, { now = new Date() } = {}) {
   if (!device) {
     throw new ServiceError("Referenced device not found", 404);
   }
+  assertSameHome(device, homeId, "Device");
 
   const mappedEspId =
     typeof device.esp32DeviceId === "string" ? device.esp32DeviceId.trim() : "";
@@ -140,6 +142,23 @@ export async function enqueueCommand(payload, { now = new Date() } = {}) {
     throw new ServiceError(
       "Requested relayNumber does not match the relay assigned to this device",
       400
+    );
+  }
+
+  const controller = await Controller.findOne({
+    esp32DeviceId: mappedEspId,
+  }).lean();
+  if (!controller) {
+    throw new ServiceError(
+      "Mapped ESP32 controller is not registered. Provision the controller first.",
+      404
+    );
+  }
+  assertSameHome(controller, homeId, "Controller");
+  if (controller.status !== "active") {
+    throw new ServiceError(
+      `Mapped ESP32 controller is ${controller.status} and cannot accept commands`,
+      409
     );
   }
 
@@ -176,7 +195,8 @@ export async function enqueueCommand(payload, { now = new Date() } = {}) {
     const created = await Command.create({
       deviceId: device._id,
       esp32DeviceId: mappedEspId,
-      ownerId: device.ownerId,
+      homeId: device.homeId,
+      ownerId: ownerId || device.ownerId,
       relayNumber: device.relayNumber,
       action: data.action,
       status: "pending",
@@ -200,8 +220,13 @@ export async function enqueueCommand(payload, { now = new Date() } = {}) {
   }
 }
 
-export async function listCommands(filters = {}, { now = new Date() } = {}) {
+export async function listCommands(
+  filters = {},
+  { homeId, now = new Date() } = {}
+) {
+  assertValidObjectId(homeId, "homeId");
   const { query, limit } = validateCommandQueryFilters(filters);
+  query.homeId = homeId;
   await connectDB();
 
   await expireStaleCommands({
@@ -213,7 +238,11 @@ export async function listCommands(filters = {}, { now = new Date() } = {}) {
   return Command.find(query).sort({ createdAt: -1 }).limit(limit).lean();
 }
 
-export async function getCommandById(identifier, { now = new Date() } = {}) {
+export async function getCommandById(
+  identifier,
+  { homeId, now = new Date() } = {}
+) {
+  assertValidObjectId(homeId, "homeId");
   const { field, value } = assertValidCommandId(identifier);
   await connectDB();
 
@@ -224,6 +253,7 @@ export async function getCommandById(identifier, { now = new Date() } = {}) {
     throw new ServiceError("Command not found", 404);
   }
 
+  assertSameHome(command, homeId, "Command");
   return command;
 }
 

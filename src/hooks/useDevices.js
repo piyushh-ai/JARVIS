@@ -1,10 +1,12 @@
 "use client";
 
+import { useCallback } from "react";
 import {
   createDevice as createDeviceApi,
   deleteDevice as deleteDeviceApi,
   getDeviceById,
   getDevices,
+  toggleDevice as toggleDeviceApi,
   updateDevice as updateDeviceApi,
 } from "@/services/deviceApi";
 import { useCollectionResource } from "@/hooks/useCollectionResource";
@@ -20,7 +22,7 @@ const DEVICE_RESOURCE_API = {
 /**
  * Reusable hook for fetching and mutating smart room devices via /api/devices.
  */
-export function useDevices({ roomId, type, autoFetch = true } = {}) {
+export function useDevices({ homeId, roomId, type, autoFetch = true } = {}) {
   const {
     items,
     loading,
@@ -34,11 +36,30 @@ export function useDevices({ roomId, type, autoFetch = true } = {}) {
     createItem,
     updateItem,
     deleteItem,
+    replaceItem,
+    setMutationError,
   } = useCollectionResource({
     api: DEVICE_RESOURCE_API,
-    filters: { roomId, type },
+    filters: { homeId, roomId, type },
     autoFetch,
   });
+
+  const toggleDevice = useCallback(
+    async (id, payload = {}) => {
+      setMutationError(null);
+      try {
+        const result = await toggleDeviceApi(id, payload);
+        if (result?.device) {
+          replaceItem(result.device);
+        }
+        return result;
+      } catch (err) {
+        setMutationError(err?.message || "Failed to toggle device");
+        throw err;
+      }
+    },
+    [replaceItem, setMutationError]
+  );
 
   return {
     devices: items,
@@ -52,9 +73,9 @@ export function useDevices({ roomId, type, autoFetch = true } = {}) {
     getDevice: getItem,
     createDevice: createItem,
     updateDevice: updateItem,
+    toggleDevice,
     deleteDevice: deleteItem,
   };
 }
 
 export default useDevices;
-

@@ -18,6 +18,8 @@ export default function DeviceFormModal({
   mode = "create",
   initialDevice = null,
   rooms = [],
+  controllers = [],
+  devices = [],
   submitting = false,
   onClose,
   onSubmit,
@@ -107,12 +109,35 @@ export default function DeviceFormModal({
       parsedRelay = n;
     }
 
+    const trimmedEspId = esp32DeviceId.trim();
+    if (parsedRelay !== null && !trimmedEspId) {
+      setValidationError(
+        "Select a provisioned ESP32 controller before assigning a relay number."
+      );
+      return;
+    }
+
+    if (trimmedEspId && parsedRelay !== null) {
+      const conflict = devices.find(
+        (d) =>
+          String(d._id) !== String(initialDevice?._id || "") &&
+          d.esp32DeviceId === trimmedEspId &&
+          d.relayNumber === parsedRelay
+      );
+      if (conflict) {
+        setValidationError(
+          `Relay #${parsedRelay} on "${trimmedEspId}" is already assigned to "${conflict.name}".`
+        );
+        return;
+      }
+    }
+
     const payload = {
       name: trimmedName,
       type,
       roomId,
       desiredState,
-      esp32DeviceId: esp32DeviceId.trim() || null,
+      esp32DeviceId: trimmedEspId || null,
       relayNumber: parsedRelay,
     };
 
@@ -238,17 +263,42 @@ export default function DeviceFormModal({
                 htmlFor="esp32-id"
                 className="block text-xs font-medium uppercase tracking-wider text-muted mb-1.5"
               >
-                ESP32 Device ID (Optional)
+                ESP32 Controller (Optional)
               </label>
-              <input
+              <select
                 id="esp32-id"
-                type="text"
                 value={esp32DeviceId}
-                onChange={(e) => setEsp32DeviceId(e.target.value)}
-                placeholder="e.g. esp32-room-01"
-                maxLength={100}
-                className="w-full rounded-xl bg-background/80 hud-border px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted/60 focus:border-cyan-primary focus:outline-none"
-              />
+                onChange={(e) => {
+                  const nextId = e.target.value;
+                  setEsp32DeviceId(nextId);
+                  if (!nextId) {
+                    setRelayNumber("");
+                  } else if (!relayNumber) {
+                    setRelayNumber("1");
+                  }
+                }}
+                className="w-full rounded-xl bg-background/80 hud-border px-3 py-2.5 text-sm text-foreground focus:border-cyan-primary focus:outline-none"
+              >
+                <option value="">Unassigned (No ESP32)</option>
+                {controllers
+                  .filter((c) => c.status !== "revoked")
+                  .map((ctrl) => (
+                    <option key={ctrl._id} value={ctrl.esp32DeviceId}>
+                      {ctrl.name
+                        ? `${ctrl.name} (${ctrl.esp32DeviceId})`
+                        : ctrl.esp32DeviceId}
+                    </option>
+                  ))}
+                {esp32DeviceId &&
+                  !controllers.some(
+                    (c) =>
+                      c.esp32DeviceId === esp32DeviceId && c.status !== "revoked"
+                  ) && (
+                    <option value={esp32DeviceId}>
+                      {esp32DeviceId} (unavailable / revoked)
+                    </option>
+                  )}
+              </select>
             </div>
 
             <div>
@@ -256,7 +306,7 @@ export default function DeviceFormModal({
                 htmlFor="relay-number"
                 className="block text-xs font-medium uppercase tracking-wider text-muted mb-1.5"
               >
-                Relay # (Optional, 1–32)
+                Relay # (Use 1 for initial test)
               </label>
               <input
                 id="relay-number"
@@ -265,12 +315,20 @@ export default function DeviceFormModal({
                 max={32}
                 step={1}
                 value={relayNumber}
+                disabled={!esp32DeviceId}
                 onChange={(e) => setRelayNumber(e.target.value)}
-                placeholder="1–32"
-                className="w-full rounded-xl bg-background/80 hud-border px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted/60 focus:border-cyan-primary focus:outline-none"
+                placeholder={esp32DeviceId ? "1 (initial test)" : "Select ESP32 first"}
+                className="w-full rounded-xl bg-background/80 hud-border px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted/60 focus:border-cyan-primary focus:outline-none disabled:opacity-55"
               />
             </div>
           </div>
+
+          {controllers.filter((c) => c.status !== "revoked").length === 0 && (
+            <p className="text-[11px] text-amber-200/85">
+              No active ESP32 controllers provisioned in this Home yet. Save as
+              unmapped now, or provision an ESP32 controller below first.
+            </p>
+          )}
 
           <div>
             <label

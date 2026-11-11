@@ -284,10 +284,13 @@ export default function DeviceCard({
             {connBadge.label}
           </span>
 
-          {(device.esp32DeviceId || device.relayNumber !== null) && (
+          {device.esp32DeviceId && device.relayNumber ? (
             <span className="truncate text-[10px] text-muted tabular-nums">
-              {device.esp32DeviceId ? `${device.esp32DeviceId}` : "ESP32"}
-              {device.relayNumber ? ` · R${device.relayNumber}` : ""}
+              {device.esp32DeviceId} · R{device.relayNumber}
+            </span>
+          ) : (
+            <span className="truncate text-[10px] text-amber-200/80">
+              Unmapped (No ESP32)
             </span>
           )}
         </div>

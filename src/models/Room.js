@@ -15,6 +15,11 @@ const roomSchema = new mongoose.Schema(
       default: "",
       maxlength: [300, "Description cannot exceed 300 characters"],
     },
+    homeId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Home",
+      default: null,
+    },
     ownerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -26,8 +31,16 @@ const roomSchema = new mongoose.Schema(
   }
 );
 
-// Supports fast owner-scoped room listings and prevents duplicate room names per user.
-roomSchema.index({ ownerId: 1, name: 1 }, { unique: true });
+// Scope unique room names per Home for all migrated and newly created rooms
+roomSchema.index(
+  { homeId: 1, name: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { homeId: { $type: "objectId" } },
+  }
+);
+roomSchema.index({ homeId: 1, createdAt: -1 });
+roomSchema.index({ ownerId: 1, name: 1 });
 
 const Room = mongoose.models.Room || mongoose.model("Room", roomSchema);
 

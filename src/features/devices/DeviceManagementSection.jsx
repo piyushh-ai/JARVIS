@@ -27,7 +27,9 @@ const TYPE_FILTERS = [
  */
 export default function DeviceManagementSection({
   devices = [],
+  allDevices = [],
   rooms = [],
+  controllers = [],
   loading = false,
   mutating = false,
   error = null,
@@ -39,6 +41,7 @@ export default function DeviceManagementSection({
   onRefresh,
   onCreateDevice,
   onUpdateDevice,
+  onToggleDevice,
   onDeleteDevice,
 }) {
   const sectionRef = useRef(null);
@@ -99,17 +102,37 @@ export default function DeviceManagementSection({
 
   const handleToggleDesired = async (device) => {
     const nextState = device.desiredState === "on" ? "off" : "on";
+    const idempotencyKey =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? `ui_${device._id}_${nextState}_${crypto.randomUUID()}`
+        : `ui_${device._id}_${nextState}_${Date.now()}`;
+
     setBusyId(device._id);
     try {
-      await onUpdateDevice?.(device._id, { desiredState: nextState });
+      const result = onToggleDevice
+        ? await onToggleDevice(device._id, {
+            desiredState: nextState,
+            idempotencyKey,
+          })
+        : {
+            device: await onUpdateDevice?.(device._id, {
+              desiredState: nextState,
+            }),
+          };
+
+      const cmd = result?.command;
+      const updated = result?.device || device;
+
       setFeedback({
         type: "success",
-        text: `Saved desiredState "${nextState.toUpperCase()}" for ${device.name} (awaiting ESP32 hardware sync).`,
+        text: cmd
+          ? `Queued ${cmd.action.toUpperCase()} command (${cmd.commandId.slice(0, 12)}…) on ${cmd.esp32DeviceId} · Relay #${cmd.relayNumber}. Reported state remains "${updated.reportedState}" until ESP32 ACK.`
+          : `Saved desiredState "${nextState.toUpperCase()}" for ${device.name}.`,
       });
     } catch (err) {
       setFeedback({
         type: "error",
-        text: err?.message || `Failed to update ${device.name}.`,
+        text: err?.message || `Failed to queue command for ${device.name}.`,
       });
     } finally {
       setBusyId(null);
@@ -372,6 +395,8 @@ export default function DeviceManagementSection({
         mode={modalMode}
         initialDevice={editingDevice}
         rooms={rooms}
+        controllers={controllers}
+        devices={allDevices.length > 0 ? allDevices : devices}
         submitting={mutating}
         onClose={() => setModalOpen(false)}
         onSubmit={handleFormSubmit}

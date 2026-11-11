@@ -1,11 +1,8 @@
 import mongoose from "mongoose";
 import { ServiceError } from "@/lib/utils/apiResponse";
 
-/**
- * Temporary development-only owner ObjectId used until authentication supplies session.user.id.
- */
-export const DEFAULT_DEV_OWNER_ID = "000000000000000000000001";
-
+export const HOME_ROLES = ["owner", "admin", "member"];
+export const ASSIGNABLE_HOME_ROLES = ["admin", "member"];
 export const DEVICE_TYPES = ["light", "fan", "led", "other"];
 export const DEVICE_DESIRED_STATES = ["on", "off"];
 export const COMMAND_ACTIONS = ["on", "off"];
@@ -46,7 +43,11 @@ export function assertValidObjectId(value, label = "ID") {
   }
 }
 
-function assertCleanText(value, fieldName, { required = false, max = 100 } = {}) {
+function assertCleanText(
+  value,
+  fieldName,
+  { required = false, min = 0, max = 100 } = {}
+) {
   if (value === undefined) {
     if (required) {
       throw new ServiceError(`${fieldName} is required`, 400);
@@ -61,6 +62,13 @@ function assertCleanText(value, fieldName, { required = false, max = 100 } = {})
   const trimmed = value.trim();
   if (required && trimmed.length === 0) {
     throw new ServiceError(`${fieldName} cannot be empty`, 400);
+  }
+
+  if (trimmed.length > 0 && trimmed.length < min) {
+    throw new ServiceError(
+      `${fieldName} must be at least ${min} characters`,
+      400
+    );
   }
 
   if (trimmed.length > max) {
@@ -123,16 +131,9 @@ export function validateCreateRoomPayload(body) {
     max: 300,
   });
 
-  let ownerId = DEFAULT_DEV_OWNER_ID;
-  if (body.ownerId !== undefined) {
-    assertValidObjectId(body.ownerId, "ownerId");
-    ownerId = body.ownerId;
-  }
-
   return {
     name,
     description: description ?? "",
-    ownerId,
   };
 }
 
@@ -480,10 +481,18 @@ function validateRelayConfigList(relayConfig) {
       seenPins.add(gpioPin);
     }
 
-    const activeLevel =
-      entry.activeLevel !== undefined
-        ? assertEnumValue(String(entry.activeLevel).trim().toUpperCase(), ["LOW", "HIGH"], "activeLevel")
-        : "LOW";
+    let activeLevel = null;
+    if (
+      entry.activeLevel !== undefined &&
+      entry.activeLevel !== null &&
+      String(entry.activeLevel).trim() !== ""
+    ) {
+      activeLevel = assertEnumValue(
+        String(entry.activeLevel).trim().toUpperCase(),
+        ["LOW", "HIGH"],
+        "activeLevel"
+      );
+    }
 
     const safeBootState =
       entry.safeBootState !== undefined
@@ -507,19 +516,51 @@ export function validateControllerProvisionPayload(body) {
     max: 80,
   });
 
-  let ownerId = DEFAULT_DEV_OWNER_ID;
-  if (body.ownerId !== undefined) {
-    assertValidObjectId(body.ownerId, "ownerId");
-    ownerId = body.ownerId;
-  }
-
   const relayConfig = validateRelayConfigList(body.relayConfig);
 
   return {
     esp32DeviceId,
     name: name ?? "",
-    ownerId,
     relayConfig,
+  };
+}
+
+export function validateToggleDevicePayload(body = {}) {
+  let desiredState;
+  if (body.desiredState !== undefined || body.action !== undefined) {
+    desiredState = normalizeCommandAction(body.desiredState ?? body.action);
+  }
+
+  let ttlSeconds = 90;
+  if (body.ttlSeconds !== undefined) {
+    if (
+      typeof body.ttlSeconds !== "number" ||
+      !Number.isFinite(body.ttlSeconds) ||
+      !Number.isInteger(body.ttlSeconds) ||
+      body.ttlSeconds < 5 ||
+      body.ttlSeconds > 3600
+    ) {
+      throw new ServiceError(
+        "ttlSeconds must be a whole integer between 5 and 3600",
+        400
+      );
+    }
+    ttlSeconds = body.ttlSeconds;
+  }
+
+  let idempotencyKey = null;
+  if (body.idempotencyKey !== undefined && body.idempotencyKey !== null) {
+    const cleaned = assertCleanText(body.idempotencyKey, "idempotencyKey", {
+      required: false,
+      max: 128,
+    });
+    idempotencyKey = cleaned || null;
+  }
+
+  return {
+    ...(desiredState !== undefined ? { desiredState } : {}),
+    ttlSeconds,
+    idempotencyKey,
   };
 }
 
@@ -649,3 +690,100 @@ export function validateEsp32StatusPayload(body) {
     channels,
   };
 }
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export function validateEmailInput(value, fieldName = "Email") {
+  if (typeof value !== "string") {
+    throw new ServiceError(`${fieldName} is required`, 400);
+  }
+  const normalized = value.trim().toLowerCase();
+  if (!normalized || normalized.length > 254 || !EMAIL_REGEX.test(normalized)) {
+    throw new ServiceError(`Please provide a valid ${fieldName.toLowerCase()}`, 400);
+  }
+  return normalized;
+}
+
+export function validatePasswordInput(
+  value,
+  { requireMinLength = true } = {}
+) {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new ServiceError("Password is required", 400);
+  }
+  if (!value.trim()) {
+    throw new ServiceError("Password cannot be blank", 400);
+  }
+  if (value.length > 256) {
+    throw new ServiceError("Password cannot exceed 256 characters", 400);
+  }
+  if (requireMinLength && value.length < 8) {
+    throw new ServiceError("Password must be at least 8 characters long", 400);
+  }
+  return value;
+}
+
+export function validateRegisterPayload(body) {
+  const name = assertCleanText(body.name, "Name", {
+    required: true,
+    min: 2,
+    max: 100,
+  });
+  const email = validateEmailInput(body.email, "Email");
+  const password = validatePasswordInput(body.password, {
+    requireMinLength: true,
+  });
+  const homeName = assertCleanText(body.homeName, "Home name", {
+    required: false,
+    min: 2,
+    max: 80,
+  });
+
+  return {
+    name,
+    email,
+    password,
+    ...(homeName ? { homeName } : {}),
+  };
+}
+
+export function validateLoginPayload(body) {
+  const email = validateEmailInput(body.email, "Email");
+  const password = validatePasswordInput(body.password, {
+    requireMinLength: false,
+  });
+  return { email, password };
+}
+
+export function validateCreateHomePayload(body) {
+  const name = assertCleanText(body.name, "Home name", {
+    required: true,
+    min: 2,
+    max: 80,
+  });
+  return { name };
+}
+
+export function validateSwitchHomePayload(body) {
+  assertValidObjectId(body.homeId, "homeId");
+  return { homeId: body.homeId };
+}
+
+export function validateAddHomeMemberPayload(body) {
+  const email = validateEmailInput(body.email, "Email");
+  const role =
+    body.role !== undefined
+      ? assertEnumValue(body.role, ASSIGNABLE_HOME_ROLES, "member role")
+      : "member";
+  return { email, role };
+}
+
+export function validateUpdateHomeMemberRolePayload(body) {
+  const role = assertEnumValue(
+    body.role,
+    ASSIGNABLE_HOME_ROLES,
+    "member role"
+  );
+  return { role };
+}
+

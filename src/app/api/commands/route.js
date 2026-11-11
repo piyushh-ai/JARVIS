@@ -2,16 +2,21 @@ import { connection } from "next/server";
 import { handleApiError, successResponse } from "@/lib/utils/apiResponse";
 import { parseJsonBody } from "@/lib/utils/validation";
 import {
-  assertDevOnlyCommandApiAccess,
-  enqueueCommand,
-  listCommands,
-} from "@/services/commandService";
+  requireAuth,
+  requireHomeRole,
+  resolveAuthorizedHome,
+} from "@/lib/auth/guards";
+import { enqueueCommand, listCommands } from "@/services/commandService";
 
 export async function GET(request) {
   await connection();
 
   try {
-    assertDevOnlyCommandApiAccess();
+    const auth = await requireAuth();
+    const home = resolveAuthorizedHome(
+      auth,
+      request.nextUrl.searchParams.get("homeId")
+    );
 
     const deviceId = request.nextUrl.searchParams.get("deviceId") || undefined;
     const esp32DeviceId =
@@ -19,12 +24,15 @@ export async function GET(request) {
     const status = request.nextUrl.searchParams.get("status") || undefined;
     const limit = request.nextUrl.searchParams.get("limit") || undefined;
 
-    const commands = await listCommands({
-      deviceId,
-      esp32DeviceId,
-      status,
-      limit,
-    });
+    const commands = await listCommands(
+      {
+        deviceId,
+        esp32DeviceId,
+        status,
+        limit,
+      },
+      { homeId: home._id }
+    );
     return successResponse("Commands fetched successfully", commands);
   } catch (error) {
     return handleApiError(error);
@@ -33,10 +41,15 @@ export async function GET(request) {
 
 export async function POST(request) {
   try {
-    assertDevOnlyCommandApiAccess();
-
+    const auth = await requireAuth(request);
     const body = await parseJsonBody(request);
-    const { command, idempotentReplay } = await enqueueCommand(body);
+    const home = resolveAuthorizedHome(auth, body.homeId);
+    requireHomeRole(home, ["owner", "admin", "member"]);
+
+    const { command, idempotentReplay } = await enqueueCommand(body, {
+      homeId: home._id,
+      ownerId: auth.user._id,
+    });
 
     return successResponse(
       idempotentReplay
@@ -49,4 +62,3 @@ export async function POST(request) {
     return handleApiError(error);
   }
 }
-
