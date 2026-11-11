@@ -14,6 +14,17 @@ jarvis/
 │   │   │   │   ├── route.js
 │   │   │   │   └── [id]/
 │   │   │   │       └── route.js
+│   │   │   ├── esp32/
+│   │   │   │   ├── commands/
+│   │   │   │   │   ├── [commandId]/ack/route.js
+│   │   │   │   │   └── pending/route.js
+│   │   │   │   ├── controllers/
+│   │   │   │   │   ├── route.js
+│   │   │   │   │   └── [id]/
+│   │   │   │   │       ├── revoke/route.js
+│   │   │   │   │       └── rotate/route.js
+│   │   │   │   ├── heartbeat/route.js
+│   │   │   │   └── status/route.js
 │   │   │   ├── health/
 │   │   │   │   └── route.js
 │   │   │   ├── rooms/
@@ -51,10 +62,12 @@ jarvis/
 │   │   │   └── connect.js
 │   │   ├── utils/
 │   │   │   ├── apiResponse.js
+│   │   │   ├── rateLimit.js
 │   │   │   └── validation.js
 │   │   └── motion.js
 │   ├── models/
 │   │   ├── Command.js
+│   │   ├── Controller.js
 │   │   ├── User.js
 │   │   ├── Room.js
 │   │   └── Device.js
@@ -62,6 +75,7 @@ jarvis/
 │   │   ├── commandService.js
 │   │   ├── deviceApi.js
 │   │   ├── deviceService.js
+│   │   ├── hardwareService.js
 │   │   ├── roomApi.js
 │   │   └── roomService.js
 │   └── types/
@@ -92,7 +106,7 @@ The primary route (`/`) delivers a mobile-first smart room HUD connected to the 
 - **Responsive Design Support:** Mobile-first layout tuned across small phones (`360px`, `390px`, `430px`), tablets (`768px`), and desktop (`1440px`) without horizontal overflow, transitioning from a single-column mobile stack into a balanced 2-column desktop HUD grid with a centered floating bottom dock.
 - **MongoDB-Backed Room Management:** Lists all smart rooms with name, description, accurate assigned device count, and per-room device chips (`RoomManagementSection`, `RoomFormModal`), supports room filtering into the devices grid, and enforces backend `409` safe deletion (blocking removal when devices remain assigned without silently deleting or reassigning devices).
 - **MongoDB-Backed Device Management:** Lists persisted devices (name, type, room name, `connectionStatus`, `desiredState`, `reportedState`, optional ESP32 ID/relay), supports room/type filtering, modal creation/editing (`DeviceFormModal`), inline delete confirmation, loading/empty/error-retry states, and `desiredState` toggling via `useDevices` and `useRooms`. Toggling `desiredState` saves user intent in MongoDB only and never displays a device as physically ON or online without confirmed `reportedState`/`connectionStatus`.
-- **Current QA & Testing Status (Steps 20–23 Verified):** ESLint (`npm run lint`), production build (`npm run build`), client bundle secret scan (`.next/static` JS chunks), Vercel serverless deployment readiness audit (`connect.js` stale-socket reset + `maxPoolSize: 10`, zero hardcoded `localhost`/`fs` APIs, `await connection()` dynamic route checks), backend security/validation/conflict/DB error-classification checks (`400`/`403`/`404`/`409`/`503`), and full-stack React 19 + Command Queue integration suites pass. Remaining blockers before open public production launch: user/device authentication (`ownerId` session enforcement on `/api/rooms*` & `/api/devices*`, `/api/esp32/*` tokens) and live ESP32 hardware actuation; live Chrome visual responsive/GSAP checks require manual browser QA.
+- **Current QA & Testing Status (Step 24 ESP32 APIs Verified):** ESLint (`npm run lint`), production build (`npm run build`), client bundle secret scan (`.next/static` JS chunks), Vercel serverless deployment readiness audit, backend security/validation/conflict/DB checks, and full-stack React 19 + Command Queue + ESP32 Hardware Backend API integration suites pass against live `next start` + MongoDB Atlas—covering controller provisioning/rotation/revocation (`JARVIS_ADMIN_SECRET`), constant-time Bearer + `X-Device-Id` authentication (`401`/`403` HTTPS enforcement), heartbeat (`lastSeen`/`connectionStatus: "online"`), atomic command polling (`pending -> processing`), cross-controller ACK isolation (`403`), duplicate/expired ACK rejection (`409`), failed ACK state preservation, bulk status sync, and live HTTP `429` rate limiting. Remaining tasks: configure `JARVIS_ADMIN_SECRET` & `ESP32_TOKEN_PEPPER` in Vercel before provisioning hardware on `https://jarvis-puce-psi.vercel.app`, implement user auth on `/api/rooms*` + `/api/devices*`, wire dashboard toggles to auto-enqueue commands, and flash ESP32 firmware.
 
 ## Screenshots
 
@@ -108,8 +122,9 @@ JARVIS uses **Next.js App Router Route Handlers** (`src/app/api/`) instead of a 
   - `Room` — Smart rooms (`name`, `description`, `ownerId` referencing `User`, unique per-owner room name index, timestamps).
   - `Device` — Smart-room endpoints (`name`, `type`, `roomId`, `ownerId`, optional ESP32 hardware mapping `esp32DeviceId` + `relayNumber`, `connectionStatus`, `lastSeen`, and separate `desiredState` vs. `reportedState` tracking).
   - `Command` — Persistent hardware command queue (`commandId` UUID, `deviceId`, `esp32DeviceId`, `ownerId`, `relayNumber`, `action` `on`/`off`, `status` `pending | processing | success | failed | expired`, `attemptCount`/`maxAttempts`, `processingStartedAt`/`processingUntil` lease, `expiresAt`, `retainUntil` 30-day TTL cleanup, `executedAt`, `result`, `errorReason`, partial unique `idempotencyKey`, timestamps).
-- **Implemented now:** `mongoose` connection utility (`src/lib/db/connect.js`), `GET /api/health`, Mongoose models (`User`, `Room`, `Device`, `Command`), service layer (`roomService.js`, `deviceService.js`, `commandService.js`), validation/response utilities (`src/lib/utils/`), Room/Device REST CRUD endpoints, and dev-only Command Queue APIs (`GET`/`POST /api/commands`, `GET /api/commands/[id]`).
-- **Designed (Step 21 — Still Pending Steps 23–26):** Controller provisioning & hashed-token auth (`Controller` model), authenticated `/api/esp32/*` HTTP polling/heartbeat/ACK routes, `deviceService` command auto-enqueue wiring, ESP32-WROOM-32 firmware, and physical relay execution. See [Architecture](docs/ARCHITECTURE.md#esp32-communication-architecture-step-21-design--not-yet-implemented).
+  - `Controller` — Physical ESP32 controller identity (`esp32DeviceId`, `ownerId`, peppered SHA-256 `tokenHash` + `previousTokenHash` with `select: false`, `tokenPrefix`, `tokenVersion`, `status` `provisioning | active | revoked`, `relayConfig`, `firmwareVersion`, `lastRssi`, `lastBootReason`, `freeHeapBytes`, `uptimeSeconds`, `lastSeen`, timestamps).
+- **Implemented now:** `mongoose` connection utility (`src/lib/db/connect.js`), `GET /api/health`, Mongoose models (`User`, `Room`, `Device`, `Command`, `Controller`), service layer (`roomService.js`, `deviceService.js`, `commandService.js`, `hardwareService.js`), validation/rate-limit/response utilities (`src/lib/utils/`), Room/Device REST CRUD endpoints, dev-only Command Queue APIs (`/api/commands*`), and authenticated ESP32 Hardware APIs (`/api/esp32/*`).
+- **Pending Future Work:** User session auth (`ownerId` enforcement on `/api/rooms*`, `/api/devices*`, `/api/commands*`), dashboard/device-toggle auto-enqueue wiring, Admin ESP32 Provisioning UI, and ESP32-WROOM-32 firmware + physical relay control. See [Architecture](docs/ARCHITECTURE.md).
 - **Room APIs (`/api/rooms`):**
   - `GET /api/rooms` — List rooms (optional `?ownerId=`).
   - `POST /api/rooms` — Create a room (`name`, optional `description`, optional `ownerId`).
@@ -126,7 +141,14 @@ JARVIS uses **Next.js App Router Route Handlers** (`src/app/api/`) instead of a 
   - `GET /api/commands` — Expire stale pending/timed-out commands and list filtered history (`?deviceId=`, `?esp32DeviceId=`, `?status=`, `?limit=`).
   - `POST /api/commands` — Queue a `pending` command (`deviceId` mapped to an ESP32 relay, `action` `on`/`off`, optional `relayNumber`, `ttlSeconds`, `idempotencyKey`) with idempotent replay (`200`) vs conflict (`409`); never alters physical `reportedState`.
   - `GET /api/commands/[id]` — Fetch command details by `commandId` UUID or MongoDB `_id`.
-- **Security Notice (Development Only):** User authentication and ESP32 controller token auth are **not yet implemented**. `/api/commands` and `/api/commands/[id]` explicitly return `403 Forbidden` whenever `NODE_ENV === "production"`, and `/api/rooms` / `/api/devices` remain strictly local pre-auth endpoints—do **not** deploy publicly without authentication and session scoping.
+- **ESP32 Hardware APIs (`/api/esp32/*` — Authenticated & Rate Limited):**
+  - `GET / POST /api/esp32/controllers` *(Admin Header `X-Admin-Key` = `JARVIS_ADMIN_SECRET`)* — Provision or list ESP32 controllers (`201` returns `rawToken` once; hashes excluded via `select: false`; fail-closed `503` if secret unset).
+  - `POST /api/esp32/controllers/[id]/rotate` & `.../revoke` *(Admin Header `X-Admin-Key`)* — Rotate controller token with overlap grace window (`graceMinutes`) or immediately revoke (`status: "revoked"` + mark bound devices `"offline"`).
+  - `POST /api/esp32/heartbeat` *(`X-Device-Id` + `Authorization: Bearer <token>`)* — Updates `Controller.lastSeen`/diagnostics, marks bound devices `"online"`, expires overdue commands, and returns `pendingCommandCount`.
+  - `GET /api/esp32/commands/pending` *(`X-Device-Id` + `Authorization: Bearer <token>`)* — Atomically claims up to `?limit=` (default `8`, max `16`) eligible `pending`/retryable commands scoped strictly to that `esp32DeviceId`.
+  - `POST /api/esp32/commands/[commandId]/ack` *(`X-Device-Id` + `Authorization: Bearer <token>`)* — Idempotent completion (`success` / `failed`), verifies device ownership (`403`) and terminal/expired guards (`409`), and updates `Device.reportedState` strictly from verified hardware outcomes.
+  - `POST /api/esp32/status` *(`X-Device-Id` + `Authorization: Bearer <token>`)* — Boot/recovery channel reconciliation updating `Device.reportedState` + `connectionStatus: "online"` without altering user `desiredState`.
+- **Security Notice:** Hardware endpoints enforce `X-Device-Id` + hashed Bearer tokens, `X-Admin-Key` fail-closed provisioning, TLS checks behind non-loopback proxies, and rate limiting (`429`). User authentication on `/api/rooms*` and `/api/devices*` is **not yet implemented**—keep Vercel Deployment Protection active until user sessions land.
 
 ## Frontend API Communication Architecture
 
@@ -204,6 +226,8 @@ JARVIS builds cleanly for Vercel's Node.js Serverless runtime without local disk
 2. **Import to Vercel:** In the Vercel dashboard, choose **Add New Project -> Import Git Repository**, select this GitHub repo, keep the **Next.js** framework preset and repository root (`./`), and leave default build/install commands (`npm run build`, `npm install`).
 3. **Configure Environment Variables (Project Settings -> Environment Variables):**
    - `MONGODB_URI` *(Required, server-only)* — Your MongoDB Atlas connection string. **Never** prefix with `NEXT_PUBLIC_`.
+   - `JARVIS_ADMIN_SECRET` *(Required before provisioning ESP32 boards, server-only)* — Secret required on `X-Admin-Key` for `/api/esp32/controllers*` (returns `503` if unset).
+   - `ESP32_TOKEN_PEPPER` *(Recommended, server-only)* — HMAC pepper for hashing per-device ESP32 Bearer tokens.
    - `NEXT_PUBLIC_API_BASE_URL` *(Optional)* — Leave unset so client requests use same-origin `/api` (`src/lib/api/client.js`).
 4. **Deploy & Verify:**
    - Trigger **Deploy** and inspect build logs.

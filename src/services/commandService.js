@@ -321,6 +321,7 @@ export async function acknowledgeCommand({
   commandId,
   esp32DeviceId,
   deviceId,
+  relayNumber,
   status,
   reportedState,
   executedAt,
@@ -386,6 +387,13 @@ export async function acknowledgeCommand({
     (deviceId !== undefined && String(existing.deviceId) !== String(deviceId))
   ) {
     throw new ServiceError("Command belongs to another device", 403);
+  }
+
+  if (relayNumber !== undefined && existing.relayNumber !== relayNumber) {
+    throw new ServiceError(
+      "Acknowledged relayNumber does not match command relayNumber",
+      400
+    );
   }
 
   if (existing.status === "expired" || existing.expiresAt <= now) {

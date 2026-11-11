@@ -394,3 +394,258 @@ export function validateCommandQueryFilters({
 
   return { query, limit: parsedLimit };
 }
+
+export async function parseOptionalJsonBody(request) {
+  let rawText = "";
+  try {
+    rawText = await request.text();
+  } catch {
+    throw new ServiceError("Unable to read request body", 400);
+  }
+
+  if (!rawText || !rawText.trim()) {
+    return {};
+  }
+
+  let body;
+  try {
+    body = JSON.parse(rawText);
+  } catch {
+    throw new ServiceError("Request body must be valid JSON", 400);
+  }
+
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new ServiceError("Request body must be a JSON object", 400);
+  }
+
+  return body;
+}
+
+function assertOptionalBoundedNumber(value, fieldName, { min, max, integer = false } = {}) {
+  if (value === undefined || value === null) return undefined;
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    (integer && !Number.isInteger(value)) ||
+    (min !== undefined && value < min) ||
+    (max !== undefined && value > max)
+  ) {
+    throw new ServiceError(
+      `${fieldName} must be a valid ${integer ? "integer" : "number"}${
+        min !== undefined && max !== undefined ? ` between ${min} and ${max}` : ""
+      }`,
+      400
+    );
+  }
+  return value;
+}
+
+function validateRelayConfigList(relayConfig) {
+  if (relayConfig === undefined) return [];
+  if (!Array.isArray(relayConfig) || relayConfig.length > 32) {
+    throw new ServiceError(
+      "relayConfig must be an array of at most 32 channel mappings",
+      400
+    );
+  }
+
+  const seenRelays = new Set();
+  const seenPins = new Set();
+  const normalized = [];
+
+  for (const entry of relayConfig) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new ServiceError("Each relayConfig entry must be an object", 400);
+    }
+
+    const relayNumber = validateRelayNumber(entry.relayNumber);
+    if (!Number.isInteger(relayNumber)) {
+      throw new ServiceError("Each relayConfig entry requires a relayNumber (1-32)", 400);
+    }
+    if (seenRelays.has(relayNumber)) {
+      throw new ServiceError(`Duplicate relayNumber ${relayNumber} in relayConfig`, 400);
+    }
+    seenRelays.add(relayNumber);
+
+    let gpioPin = null;
+    if (entry.gpioPin !== undefined && entry.gpioPin !== null) {
+      gpioPin = assertOptionalBoundedNumber(entry.gpioPin, "gpioPin", {
+        min: 0,
+        max: 39,
+        integer: true,
+      });
+      if (seenPins.has(gpioPin)) {
+        throw new ServiceError(`Duplicate gpioPin ${gpioPin} in relayConfig`, 400);
+      }
+      seenPins.add(gpioPin);
+    }
+
+    const activeLevel =
+      entry.activeLevel !== undefined
+        ? assertEnumValue(String(entry.activeLevel).trim().toUpperCase(), ["LOW", "HIGH"], "activeLevel")
+        : "LOW";
+
+    const safeBootState =
+      entry.safeBootState !== undefined
+        ? assertEnumValue(String(entry.safeBootState).trim().toLowerCase(), ["off"], "safeBootState")
+        : "off";
+
+    normalized.push({ relayNumber, gpioPin, activeLevel, safeBootState });
+  }
+
+  return normalized;
+}
+
+export function validateControllerProvisionPayload(body) {
+  const esp32DeviceId = assertCleanText(body.esp32DeviceId, "esp32DeviceId", {
+    required: true,
+    max: 100,
+  });
+
+  const name = assertCleanText(body.name, "Controller name", {
+    required: false,
+    max: 80,
+  });
+
+  let ownerId = DEFAULT_DEV_OWNER_ID;
+  if (body.ownerId !== undefined) {
+    assertValidObjectId(body.ownerId, "ownerId");
+    ownerId = body.ownerId;
+  }
+
+  const relayConfig = validateRelayConfigList(body.relayConfig);
+
+  return {
+    esp32DeviceId,
+    name: name ?? "",
+    ownerId,
+    relayConfig,
+  };
+}
+
+export function validateHeartbeatPayload(body = {}) {
+  const firmwareVersion = assertCleanText(body.firmwareVersion, "firmwareVersion", {
+    required: false,
+    max: 40,
+  });
+  const rssi = assertOptionalBoundedNumber(body.rssi, "rssi", { min: -120, max: 0 });
+  const uptimeSeconds = assertOptionalBoundedNumber(body.uptimeSeconds, "uptimeSeconds", {
+    min: 0,
+    max: 1e9,
+  });
+  const freeHeapBytes = assertOptionalBoundedNumber(body.freeHeapBytes, "freeHeapBytes", {
+    min: 0,
+    max: 1e8,
+  });
+
+  return {
+    ...(firmwareVersion !== undefined ? { firmwareVersion } : {}),
+    ...(rssi !== undefined ? { rssi } : {}),
+    ...(uptimeSeconds !== undefined ? { uptimeSeconds } : {}),
+    ...(freeHeapBytes !== undefined ? { freeHeapBytes } : {}),
+  };
+}
+
+export function validateCommandAckPayload(body) {
+  if (typeof body.status !== "string") {
+    throw new ServiceError('Acknowledge status is required ("success" or "failed")', 400);
+  }
+  const status = assertEnumValue(
+    body.status.trim().toLowerCase(),
+    ["success", "failed"],
+    "acknowledge status"
+  );
+
+  let reportedState;
+  if (body.reportedState !== undefined && body.reportedState !== null) {
+    if (typeof body.reportedState !== "string") {
+      throw new ServiceError("reportedState must be a string", 400);
+    }
+    reportedState = assertEnumValue(
+      body.reportedState.trim().toLowerCase(),
+      HARDWARE_REPORTED_STATES,
+      "reportedState"
+    );
+  }
+
+  let relayNumber;
+  if (body.relayNumber !== undefined && body.relayNumber !== null) {
+    relayNumber = validateRelayNumber(body.relayNumber);
+  }
+
+  let executedAt;
+  if (body.executedAt !== undefined && body.executedAt !== null) {
+    const dt = new Date(body.executedAt);
+    if (Number.isNaN(dt.getTime())) {
+      throw new ServiceError("executedAt must be a valid timestamp", 400);
+    }
+    executedAt = dt;
+  }
+
+  const result = assertCleanText(body.result, "result", { required: false, max: 300 });
+  const rawErr = body.errorReason !== undefined ? body.errorReason : body.failureReason;
+  const errorReason = assertCleanText(rawErr, "errorReason", {
+    required: false,
+    max: 300,
+  });
+
+  return {
+    status,
+    ...(reportedState !== undefined ? { reportedState } : {}),
+    ...(relayNumber !== undefined ? { relayNumber } : {}),
+    ...(executedAt !== undefined ? { executedAt } : {}),
+    ...(result !== undefined ? { result } : {}),
+    ...(errorReason !== undefined ? { errorReason } : {}),
+  };
+}
+
+export function validateEsp32StatusPayload(body) {
+  const bootReason = assertCleanText(body.bootReason, "bootReason", {
+    required: false,
+    max: 80,
+  });
+  const firmwareVersion = assertCleanText(body.firmwareVersion, "firmwareVersion", {
+    required: false,
+    max: 40,
+  });
+  const rssi = assertOptionalBoundedNumber(body.rssi, "rssi", { min: -120, max: 0 });
+
+  if (!Array.isArray(body.channels) || body.channels.length === 0 || body.channels.length > 32) {
+    throw new ServiceError("channels must be a non-empty array (1 to 32 entries)", 400);
+  }
+
+  const seenRelays = new Set();
+  const channels = [];
+
+  for (const ch of body.channels) {
+    if (!ch || typeof ch !== "object" || Array.isArray(ch)) {
+      throw new ServiceError("Each channel entry must be an object", 400);
+    }
+    const relayNumber = validateRelayNumber(ch.relayNumber);
+    if (!Number.isInteger(relayNumber)) {
+      throw new ServiceError("Each channel requires a whole integer relayNumber (1-32)", 400);
+    }
+    if (seenRelays.has(relayNumber)) {
+      throw new ServiceError(`Duplicate relayNumber ${relayNumber} in channels`, 400);
+    }
+    seenRelays.add(relayNumber);
+
+    if (typeof ch.reportedState !== "string") {
+      throw new ServiceError("Each channel requires a reportedState (on, off, unknown)", 400);
+    }
+    const reportedState = assertEnumValue(
+      ch.reportedState.trim().toLowerCase(),
+      HARDWARE_REPORTED_STATES,
+      "reportedState"
+    );
+
+    channels.push({ relayNumber, reportedState });
+  }
+
+  return {
+    ...(bootReason !== undefined ? { bootReason } : {}),
+    ...(firmwareVersion !== undefined ? { firmwareVersion } : {}),
+    ...(rssi !== undefined ? { rssi } : {}),
+    channels,
+  };
+}

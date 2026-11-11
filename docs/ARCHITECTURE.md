@@ -28,6 +28,17 @@ jarvis/
 │   │   │   │   ├── route.js
 │   │   │   │   └── [id]/
 │   │   │   │       └── route.js
+│   │   │   ├── esp32/              # Authenticated ESP32 & Controller Admin Route Handlers
+│   │   │   │   ├── commands/
+│   │   │   │   │   ├── pending/route.js
+│   │   │   │   │   └── [commandId]/ack/route.js
+│   │   │   │   ├── controllers/
+│   │   │   │   │   ├── route.js
+│   │   │   │   │   └── [id]/
+│   │   │   │   │       ├── revoke/route.js
+│   │   │   │   │       └── rotate/route.js
+│   │   │   │   ├── heartbeat/route.js
+│   │   │   │   └── status/route.js
 │   │   │   ├── health/
 │   │   │   │   └── route.js        # Live MongoDB health check route handler
 │   │   │   ├── rooms/              # Room collection & item CRUD Route Handlers
@@ -60,12 +71,14 @@ jarvis/
 │   │   │   └── client.js           # Reusable Axios instance & ApiError normalizer
 │   │   ├── db/
 │   │   │   └── connect.js          # Cached Mongoose connection utility
-│   │   ├── utils/                  # Shared API response, error, & validation helpers
+│   │   ├── utils/                  # Shared API response, rate limit, & validation helpers
 │   │   │   ├── apiResponse.js
+│   │   │   ├── rateLimit.js        # Serverless-safe sliding-window rate limiter
 │   │   │   └── validation.js
 │   │   └── motion.js               # GSAP reduced-motion and pointer capability helpers
 │   ├── models/                     # Mongoose database schemas & models
 │   │   ├── Command.js              # Hardware command queue, leases, TTL & idempotency
+│   │   ├── Controller.js           # Physical ESP32 identity, hashed tokens & relayConfig
 │   │   ├── User.js                 # User profile, preferences, optional auth hash
 │   │   ├── Room.js                 # Multi-room definitions scoped by ownerId
 │   │   └── Device.js               # Smart devices with desired vs reported state
@@ -73,6 +86,7 @@ jarvis/
 │   │   ├── commandService.js       # Backend Command queue, lifecycle & lease claims
 │   │   ├── deviceApi.js            # Frontend Axios service for /api/devices
 │   │   ├── deviceService.js        # Backend Mongoose service for Device operations
+│   │   ├── hardwareService.js      # Controller auth, provisioning, heartbeat & status
 │   │   ├── roomApi.js              # Frontend Axios service for /api/rooms
 │   │   └── roomService.js          # Backend Mongoose service for Room operations
 │   └── types/                      # Shared type/schema definitions directory
@@ -90,7 +104,7 @@ jarvis/
 - **Source directory (`src/`):** Application code lives under `src/`, with the `@/*` path alias mapped to `./src/*` in `jsconfig.json`.
 - **Next.js features (`next.config.mjs`):** `cacheComponents`, `partialPrefetching`, and `experimental.agentFeedback` are enabled alongside Turbopack CSS handling.
 - **Environment variables:** Copy `.env.example` to `.env.local` for local overrides; `.env*` files except `.env.example` are gitignored.
-- **Database & API status:** `src/lib/db/connect.js`, `src/app/api/{health,rooms,devices,commands}`, `src/lib/utils/{apiResponse,validation}.js`, `src/services/{roomService,deviceService,commandService}.js`, `src/models/{User,Room,Device,Command}.js`, and live frontend dashboard integration (`useRooms`, `useDevices`) are implemented and verified against MongoDB Atlas. `/api/commands*` endpoints return `403` in `NODE_ENV === "production"` until user/device auth lands; authentication, `Controller` provisioning, `/api/esp32/*` routes, and ESP32 hardware communication remain pending (the current CRUD APIs are development-only).
+- **Database & API status:** `src/lib/db/connect.js`, `src/app/api/{health,rooms,devices,commands,esp32}`, `src/lib/utils/{apiResponse,rateLimit,validation}.js`, `src/services/{roomService,deviceService,commandService,hardwareService}.js`, `src/models/{User,Room,Device,Command,Controller}.js`, and live frontend dashboard integration (`useRooms`, `useDevices`) are implemented and verified against MongoDB Atlas. `/api/esp32/*` endpoints authenticate every request via `X-Device-Id` + hashed Bearer tokens (`Controller`) or `X-Admin-Key` (`JARVIS_ADMIN_SECRET`); `/api/commands*` endpoints return `403` in `NODE_ENV === "production"` until user sessions land; user auth on `/api/rooms*` + `/api/devices*`, dashboard command auto-enqueue wiring, and ESP32 C++ firmware remain pending.
 
 ---
 
@@ -186,20 +200,22 @@ src/app/page.js (Live Hook Coordinator: useDevices + useRooms)
 
 JARVIS implements its backend inside the existing Next.js App Router using **Next.js Route Handlers** (`src/app/api/`) rather than maintaining a separate Express server. Database operations are isolated from React UI components, and business logic is decoupled from HTTP route handlers so API endpoints stay thin, modular, and testable.
 
-*(Current state: Mongoose connection caching, health check, schemas, shared validation/response utilities, and Room/Device CRUD services & Route Handlers are implemented and verified against MongoDB Atlas. Authentication, user APIs, and ESP32 communication remain pending.)*
+*(Current state: Mongoose connection caching, health check, `User`/`Room`/`Device`/`Command`/`Controller` schemas, shared validation/rate-limit/response utilities, Room/Device CRUD, dev-only Command APIs, and authenticated `/api/esp32/*` backend endpoints are implemented and verified against MongoDB Atlas. User auth/sessions and physical ESP32 C++ firmware remain pending.)*
 
 ### Backend Folder Responsibilities
 
-- **`src/app/api/`:** Thin Next.js API Route Handlers (`commands/route.js`, `commands/[id]/route.js`, `health/route.js`, `rooms/route.js`, `rooms/[id]/route.js`, `devices/route.js`, `devices/[id]/route.js`) calling `await connection()` on `GET` handlers for dynamic execution under `cacheComponents: true`, parsing JSON/params/query filters, invoking services, and returning uniform responses. Public `User` creation and `/api/esp32/*` routes remain omitted until authentication is implemented, and `/api/commands*` endpoints return `403 Forbidden` whenever `NODE_ENV === "production"`.
+- **`src/app/api/`:** Thin Next.js API Route Handlers (`commands/*`, `esp32/*`, `health/route.js`, `rooms/*`, `devices/*`) calling `await connection()` on `GET` handlers for dynamic execution under `cacheComponents: true`, enforcing hardware/admin auth where applicable, parsing JSON/params/query filters, invoking services, and returning uniform responses. Public `User` creation remains omitted until user auth lands, and `/api/commands*` endpoints return `403 Forbidden` whenever `NODE_ENV === "production"`.
 - **`src/lib/db/`:** Database connection utility (`src/lib/db/connect.js`) maintaining a reusable cached Mongoose connection to MongoDB Atlas.
 - **`src/lib/utils/`:**
-  - `apiResponse.js`: `ServiceError`, `successResponse()`, `errorResponse()`, and centralized `handleApiError()` mapping `ServiceError`, malformed JSON `SyntaxError`, Mongoose `ValidationError`/`CastError`, MongoDB `11000` duplicate-key conflicts (`409`), and `DB_*` errors without leaking stack traces or connection URIs.
-  - `validation.js`: `parseJsonBody()`, `assertValidObjectId()`, `assertValidCommandId()`, field allowlists preventing mass assignment (`validateCreateRoomPayload`, `validateUpdateRoomPayload`, `validateCreateDevicePayload`, `validateUpdateDevicePayload`, `validateDeviceQueryFilters`, `validateCreateCommandPayload`, `validateCommandQueryFilters`), and `DEFAULT_DEV_OWNER_ID` (`000000000000000000000001`) as a temporary pre-auth owner fallback.
-- **`src/models/`:** Mongoose database models (`User.js`, `Room.js`, `Device.js`, `Command.js`) defining persistent MongoDB schemas, validation, and indexes outside route handlers, guarded via `mongoose.models.<Name> || mongoose.model(...)` to prevent `OverwriteModelError`.
+  - `apiResponse.js`: `ServiceError`, `successResponse()`, `errorResponse()`, `Retry-After` header propagation, and centralized `handleApiError()` mapping `ServiceError`, malformed JSON `SyntaxError`, Mongoose `ValidationError`/`CastError`, MongoDB `11000` duplicate-key conflicts (`409`), and `DB_*` errors without leaking stack traces or connection URIs.
+  - `rateLimit.js`: Serverless-safe per-instance fixed-window rate limiter (`enforceRateLimit`, `getClientIp`, lazy pruning without `setInterval` or filesystem dependencies) returning HTTP `429` + `Retry-After` on bursts.
+  - `validation.js`: `parseJsonBody()`, `parseOptionalJsonBody()`, `assertValidObjectId()`, `assertValidCommandId()`, field allowlists preventing mass assignment (`validateCreateRoomPayload`, `validateUpdateRoomPayload`, `validateCreateDevicePayload`, `validateUpdateDevicePayload`, `validateDeviceQueryFilters`, `validateCreateCommandPayload`, `validateCommandQueryFilters`, `validateControllerProvisionPayload`, `validateHeartbeatPayload`, `validateCommandAckPayload`, `validateEsp32StatusPayload`), and `DEFAULT_DEV_OWNER_ID` fallback.
+- **`src/models/`:** Mongoose database models (`User.js`, `Room.js`, `Device.js`, `Command.js`, `Controller.js`) defining persistent MongoDB schemas, validation, and indexes outside route handlers, guarded via `mongoose.models.<Name> || mongoose.model(...)` to prevent `OverwriteModelError`.
 - **`src/services/`:**
   - `roomService.js`: Room CRUD (`listRooms`, `createRoom`, `getRoomById`, `updateRoomById`, `deleteRoomById`), enforcing safe deletion (`409 Conflict` if `Device.countDocuments({ roomId }) > 0`).
   - `deviceService.js`: Device CRUD (`listDevices`, `createDevice`, `getDeviceById`, `updateDeviceById`, `deleteDeviceById`), validating referenced `Room` existence, inheriting `ownerId` from the verified room, keeping hardware-owned telemetry (`reportedState`, `connectionStatus`, `lastSeen`) read-only via public CRUD, and never equating `desiredState` updates with physical relay actuation.
-  - `commandService.js`: Command Queue & Lifecycle domain service implementing `assertDevOnlyCommandApiAccess()`, `enqueueCommand()` (validates mapped `esp32DeviceId`/`relayNumber`, `on`/`off` action, idempotent replay/conflict handling, and supersedes older pending commands), `expireStaleCommands()`, `listCommands()`, `getCommandById()`, plus internal controller-auth-ready lifecycle transitions `claimPendingCommands()` (atomic `findOneAndUpdate` `15s` leases, max `3` attempts) and `acknowledgeCommand()` (enforces target ownership, blocks expired/terminal double-ACKs with `409`, and updates `Device.reportedState` + `connectionStatus` only on verified hardware results).
+  - `commandService.js`: Command Queue & Lifecycle domain service implementing `assertDevOnlyCommandApiAccess()`, `enqueueCommand()`, `expireStaleCommands()`, `listCommands()`, `getCommandById()`, `claimPendingCommands()` (atomic `findOneAndUpdate` `15s` leases, max `3` attempts), and `acknowledgeCommand()` (enforces target ownership `403`, relay matching `400`, blocks expired/terminal double-ACKs `409`, and updates `Device.reportedState` + `connectionStatus` only on verified hardware results).
+  - `hardwareService.js`: Controller provisioning/list/rotation/revocation (`assertAdminProvisionAccess` fail-closed via `JARVIS_ADMIN_SECRET` timing-safe verify), constant-time ESP32 token auth (`authenticateEsp32Request` via `X-Device-Id` + Bearer token + non-loopback HTTPS enforcement + rate limits), `recordHeartbeat`, and `reportDeviceStatus`.
 
 ### Database Models & Relationships (`src/models/`)
 
@@ -211,6 +227,8 @@ JARVIS implements its backend inside the existing Next.js App Router using **Nex
    - Stores `name`, `type` (`light | fan | led | other`), `roomId` (`ObjectId` -> `Room`), `ownerId` (`ObjectId` -> `User`), optional ESP32 hardware mapping (`esp32DeviceId`, integer `relayNumber` 1–32), `desiredState` (`on | off`, default `off`), `reportedState` (`on | off | unknown`, default `unknown`), `connectionStatus` (`online | offline | unknown`, default `unknown`), `lastSeen` (`Date`), and `timestamps`.
 4. **`Command` (`src/models/Command.js` — Implemented Step 22):**
    - Stores `commandId` (unique UUIDv4 `cmd_...`), `deviceId` (`ObjectId` -> `Device`), `esp32DeviceId` (`String`), `ownerId` (`ObjectId` -> `User`), `relayNumber` (`Integer` 1–32), `action` (`on | off`), `status` (`pending | processing | success | failed | expired`), `attemptCount` (`0..maxAttempts`), `maxAttempts` (default `3`), `processingStartedAt`, `processingUntil` (lease deadline), `expiresAt` (execution cutoff), `retainUntil` (30-day archive cutoff), `executedAt`, `result`, `errorReason`, optional `idempotencyKey`, and `timestamps`.
+5. **`Controller` (`src/models/Controller.js` — Implemented Step 24):**
+   - Stores unique `esp32DeviceId`, `name`, `ownerId` (`ObjectId` -> `User`), hashed `tokenHash` + `previousTokenHash` (`select: false`), `previousTokenExpiresAt`, `tokenPrefix`, `tokenVersion`, `status` (`provisioning | active | revoked`), configurable `relayConfig` array (`relayNumber`, `gpioPin`, `activeLevel`, `safeBootState`), `firmwareVersion`, `lastRssi`, `lastBootReason`, `freeHeapBytes`, `uptimeSeconds`, `lastSeen`, and `timestamps`.
 
 #### Relationships & State Model
 
@@ -293,9 +311,9 @@ MongoDB Atlas
 
 ---
 
-## ESP32 Communication Architecture (Step 21 Design — Not Yet Implemented)
+## ESP32 Communication Architecture (Steps 21–24)
 
-> **Status Distinction:** Sections below define the finalized **Step 21 engineering design**. None of the `/api/esp32/*` endpoints, `Controller`/`Command` models, token rotation handlers, or ESP32 firmware exist yet in `src/`. Current implementation stops at verified MongoDB Room/Device CRUD (`desiredState` vs read-only `reportedState` / `connectionStatus`).
+> **Status Distinction:** `Controller` (`src/models/Controller.js`), `Command` (`src/models/Command.js`), `commandService.js`, `hardwareService.js`, `rateLimit.js`, and all seven `/api/esp32/*` backend endpoints are **implemented and verified locally against `next start` + MongoDB Atlas**. User authentication/session guards on `/api/rooms*` + `/api/devices*`, dashboard-to-command auto-enqueue wiring, Admin Provisioning UI, live Vercel hardware soak tests, and ESP32-WROOM-32 C++ firmware remain **pending**.
 
 ### Architectural Decisions & Transport Modularity
 
@@ -381,19 +399,19 @@ stateDiagram-v2
   3. Firmware checks `ttlRemainingMs > 0` using monotonic `millis()` (avoiding clock-skew failures) and caches the last `16` `commandId`s in a RAM ring buffer so network retry re-deliveries re-send ACK without re-switching relays.
   4. `acknowledgeCommand` rejects `expired` or already-finalized (`success`/`failed`) acknowledgements with `409 Conflict` and restricts completions to the matching `esp32DeviceId`/`deviceId`.
 
-### Proposed Hardware API Contracts (Future Implementation)
+### Implemented Hardware API Contracts (Step 24 Verified)
 
-All endpoints reuse `apiResponse.js` (`{ success, message, data? }` / `{ success, message, errors? }`) and distinguish **Implemented** CRUD (`/api/health`, `/api/rooms`, `/api/devices`) from **Proposed Step 22–23** hardware routes:
+All endpoints reuse `apiResponse.js` (`{ success, message, data? }` / `{ success, message, errors? }`):
 
 | Endpoint | Auth | Purpose | Status Codes |
 | --- | --- | --- | --- |
-| `POST /api/esp32/controllers` | User Session (Admin) | Register controller, return one-time `rawToken` | `201`, `400`, `401`, `409` |
-| `POST /api/esp32/controllers/[id]/rotate` | User Session | Rotate controller secret with overlap window | `200`, `401`, `404` |
-| `POST /api/esp32/controllers/[id]/revoke` | User Session | Immediately revoke compromised controller token | `200`, `401`, `404` |
-| `POST /api/esp32/heartbeat` | Controller Bearer + `X-Device-Id` | Update `lastSeen`, Wi-Fi diagnostics, mark devices online | `200`, `400`, `401`, `429` |
-| `GET /api/esp32/commands/pending` | Controller Bearer + `X-Device-Id` | Expire stale items & atomically claim valid pending commands | `200`, `401`, `429` |
-| `POST /api/esp32/commands/[commandId]/ack` | Controller Bearer + `X-Device-Id` | Idempotent completion (`success`/`failed`) & `reportedState` sync | `200`, `400`, `401`, `404`, `409` |
-| `POST /api/esp32/status` | Controller Bearer + `X-Device-Id` | Boot/recovery multi-channel pin state reconciliation | `200`, `400`, `401`, `429` |
+| `GET / POST /api/esp32/controllers` | `X-Admin-Key` (`JARVIS_ADMIN_SECRET`) | List sanitized controllers or provision board returning `rawToken` once | `200`, `201`, `400`, `401`, `409`, `429`, `503` |
+| `POST /api/esp32/controllers/[id]/rotate` | `X-Admin-Key` (`JARVIS_ADMIN_SECRET`) | Rotate controller secret with optional overlap (`graceMinutes`) | `200`, `400`, `401`, `404`, `409`, `429`, `503` |
+| `POST /api/esp32/controllers/[id]/revoke` | `X-Admin-Key` (`JARVIS_ADMIN_SECRET`) | Revoke token hashes immediately & mark bound devices offline | `200`, `400`, `401`, `404`, `429`, `503` |
+| `POST /api/esp32/heartbeat` | Controller `X-Device-Id` + `Bearer <token>` | Update `Controller.lastSeen`/diagnostics, mark devices `online`, return `pendingCommandCount` | `200`, `400`, `401`, `403`, `429` |
+| `GET /api/esp32/commands/pending` | Controller `X-Device-Id` + `Bearer <token>` | Expire stale items & atomically lease pending commands (`limit` 1–16) | `200`, `400`, `401`, `403`, `429` |
+| `POST /api/esp32/commands/[commandId]/ack` | Controller `X-Device-Id` + `Bearer <token>` | Verify ownership (`403`), enforce lifecycle (`409`), & sync `Device.reportedState` | `200`, `400`, `401`, `403`, `404`, `409`, `429` |
+| `POST /api/esp32/status` | Controller `X-Device-Id` + `Bearer <token>` | Boot/recovery multi-channel `reportedState` sync preserving `desiredState` | `200`, `400`, `401`, `403`, `429` |
 
 Example contracts:
 
@@ -419,13 +437,14 @@ Example contracts:
 // GET /api/esp32/commands/pending -> 200 OK
 {
   "success": true,
-  "message": "Claimed pending commands",
+  "message": "Pending commands claimed",
   "data": [
     {
       "commandId": "cmd_4d2a1b8e-73e1-4c9a-9f12-104c92a01122",
       "deviceId": "6730...",
       "relayNumber": 1,
-      "requestedAction": "on",
+      "action": "on",
+      "attemptCount": 1,
       "ttlRemainingMs": 85000,
       "expiresAt": "2026-11-11T13:11:25.000Z"
     }
@@ -437,24 +456,24 @@ Example contracts:
 {
   "success": true,
   "message": "Command acknowledged",
-  "data": { "commandId": "cmd_4d2a1b8e-...", "status": "success", "reportedState": "on" }
+  "data": { "commandId": "cmd_4d2a1b8e-...", "deviceId": "6730...", "relayNumber": 1, "action": "on", "status": "success", "executedAt": "2026-11-11T13:10:04.120Z", "result": "Relay CH1 ON", "errorReason": null }
 }
 
 // POST /api/esp32/status Request -> 200 OK (Power-on / Wi-Fi recovery reconciliation)
 // Req: { "bootReason": "power_on", "channels": [{ "relayNumber": 1, "reportedState": "off" }, { "relayNumber": 2, "reportedState": "off" }] }
 {
   "success": true,
-  "message": "Hardware channel status synced",
-  "data": { "updatedDevices": 2, "connectionStatus": "online" }
+  "message": "Hardware device status synced",
+  "data": { "esp32DeviceId": "esp32-room-01", "connectionStatus": "online", "updatedDevices": 2, "unmappedRelays": [] }
 }
 ```
 
-### Proposed Database Architecture (Deferred — Do Not Modify Existing Schemas Yet)
+### Hardware & Command Database Architecture (Implemented Steps 22 & 24)
 
-Existing `Device` schema (`esp32DeviceId`, `relayNumber`, `desiredState`, `reportedState`, `connectionStatus`, `lastSeen`, and unique partial index `{ esp32DeviceId: 1, relayNumber: 1 }`) requires **no breaking changes** and remains the single source of truth for device state. Step 22 implemented `Command`; `Controller` remains deferred to Step 23:
+Existing `Device` schema (`esp32DeviceId`, `relayNumber`, `desiredState`, `reportedState`, `connectionStatus`, `lastSeen`, and unique partial index `{ esp32DeviceId: 1, relayNumber: 1 }`) requires **no breaking changes** and remains the single source of truth for logical state:
 
-1. **`Controller` (`src/models/Controller.js` — Proposed Step 23):**
-   - Fields: `esp32DeviceId` (unique String), `name`, `ownerId` (`ObjectId` -> `User`), `tokenHash` (`select: false`), `previousTokenHash` (`select: false`), `previousTokenExpiresAt`, `tokenPrefix`, `tokenVersion`, `status` (`"provisioning" | "active" | "revoked"`), `relayConfig` (channels `1..8`: `relayNumber`, `gpioPin`, `activeLevel`, `safeBootState`), `firmwareVersion`, `lastRssi`, `lastBootReason`, `lastSeen`, `timestamps`.
+1. **`Controller` (`src/models/Controller.js` — Implemented in Step 24):**
+   - Fields: `esp32DeviceId` (unique String), `name`, `ownerId` (`ObjectId` -> `User`), `tokenHash` (`select: false`), `previousTokenHash` (`select: false`), `previousTokenExpiresAt`, `tokenPrefix`, `tokenVersion`, `status` (`"provisioning" | "active" | "revoked"`), `relayConfig` (channels `relayNumber`, `gpioPin`, `activeLevel`, `safeBootState`), `firmwareVersion`, `lastRssi`, `lastBootReason`, `freeHeapBytes`, `uptimeSeconds`, `lastSeen`, `timestamps`.
    - Indexes: `{ esp32DeviceId: 1 }` (`unique`), `{ ownerId: 1, status: 1 }`, `{ status: 1, lastSeen: 1 }`.
 2. **`Command` (`src/models/Command.js` — Implemented in Step 22):**
    - Fields: `commandId` (unique UUID String), `deviceId` (`ObjectId` -> `Device`), `esp32DeviceId` (String), `ownerId` (`ObjectId` -> `User`), `relayNumber` (Integer 1–32), `action` (`"on" | "off"`), `status` (`"pending" | "processing" | "success" | "failed" | "expired"`), `attemptCount` (default `0`, max `3`), `maxAttempts`, `processingStartedAt`, `processingUntil`, `expiresAt`, `retainUntil` (`Date`), `executedAt`, `result`, `errorReason`, `idempotencyKey`, `timestamps`.
@@ -477,13 +496,14 @@ Existing `Device` schema (`esp32DeviceId`, `relayNumber`, `desiredState`, `repor
 ### Security & Production Controls
 
 - **Transport & Auth:** Enforce HTTPS/TLS 1.2+ with CA verification on ESP32; keep User session auth strictly separate from hashed ESP32 controller Bearer tokens; block production deployment while pre-auth CRUD fallback exists.
-- **Rate Limiting & Payload Hygiene:** Enforce per-controller and per-IP sliding-window limits on `/api/esp32/*` (`429 Too Many Requests`), restrict JSON body sizes (`<= 4KB`), validate channels/actions against schema bounds, and emit sanitized JSON errors (`apiResponse.js`).
+- **Rate Limiting & Payload Hygiene:** `rateLimit.js` enforces per-serverless-instance sliding-window caps on `/api/esp32/*` (`429 Too Many Requests` + `Retry-After`, swapping cleanly to Redis/Vercel WAF for global multi-region enforcement later), validates channels/actions against schema bounds, and emits sanitized JSON errors (`apiResponse.js`).
 - **Replay & Audit Trail:** Single-completion `commandId` machine + short `expiresAt` windows defeat replays; immutable command transitions (`Command` history + failed auth log entries) provide auditable diagnostics.
 
 ### Implementation Dependency Order (Steps 22–26)
 
 1. **Step 22 — Command Queue + MongoDB Implementation *(Implemented)*:** `Command` Mongoose schema (`src/models/Command.js`), `commandService.js` (enqueue/supersede, expiry, atomic claim leases, lifecycle transitions, device telemetry ACK separation), and dev-only `/api/commands` & `/api/commands/[id]` endpoints (locked `403` in production).
-2. **Step 23 — Auth, `Controller` Provisioning & ESP32 Route Handlers:** Implement user authentication/session scoping (`ownerId`), `Controller` Mongoose model + token hashing/rotation/revocation, `/api/esp32/controllers*`, `/api/esp32/heartbeat`, `/api/esp32/commands/pending`, `/api/esp32/commands/[commandId]/ack`, `/api/esp32/status`, wire `deviceService` state updates to enqueue commands cleanly, and add heartbeat offline staleness sweep.
-3. **Step 24 — Admin Provisioning UI & Dashboard Command Telemetry:** Build controller provisioning/token management and surface `Command` lifecycle states (`pending`/`processing`/`success`/`failed`/`expired`) alongside live `reportedState` and `connectionStatus` on the dashboard.
-4. **Step 25 — Bench GPIO Verification & ESP32-WROOM-32 Firmware:** Verify relay active polarity & safe GPIO pinout on physical hardware, then implement modular firmware (Wi-Fi TLS, NVS secrets, safe boot init, heartbeat, atomic poll/ack, RAM deduplication, boot/status sync).
-5. **Step 26 — Hardware-in-the-Loop QA & Hardening:** Verify full browser-to-relay execution, Wi-Fi/power/timeout/expiry failure recovery, rate limiting, and optional MQTT transport readiness.
+2. **Step 23 — Vercel Deployment Readiness Audit *(Implemented)*:** Audited Next.js serverless routes, static bundle secret exclusion, env isolation, and hardened `connectDB()` stale-socket reconnection (`maxPoolSize: 10`).
+3. **Step 24 — ESP32 Backend Communication API Implementation *(Implemented)*:** Implemented `Controller` model (`src/models/Controller.js`), `hardwareService.js` (`X-Device-Id` + hashed Bearer token auth, constant-time compare, `JARVIS_ADMIN_SECRET` fail-closed provisioning/rotation/revocation), `rateLimit.js` (`429` burst guard per serverless instance), and `/api/esp32/{controllers*,heartbeat,commands/pending,commands/[commandId]/ack,status}` routes.
+4. **Next — User Auth, Admin Provisioning UI & Dashboard Command Wiring:** Add user login/session scoping (`ownerId` on `/api/rooms*`, `/api/devices*`, `/api/commands*`), wire dashboard/device state changes to enqueue `Command` records, add Admin Provisioning UI + Command lifecycle telemetry UI, and add cross-instance distributed rate limiting (Upstash/Vercel WAF) + heartbeat staleness sweep if needed.
+5. **Following — Bench GPIO Verification & ESP32-WROOM-32 Firmware:** Verify relay active polarity & safe GPIO pinout on physical `2 × 4-channel` relays, then implement modular firmware (Wi-Fi TLS, NVS secrets, safe boot init, heartbeat, atomic poll/ack, RAM deduplication, boot/status sync).
+6. **Final Hardware QA — Hardware-in-the-Loop QA & MQTT Optionality:** Verify full live Vercel-to-ESP32-to-relay execution, Wi-Fi/power/timeout/expiry failure recovery, and optional MQTT/WebSocket transport adapter.

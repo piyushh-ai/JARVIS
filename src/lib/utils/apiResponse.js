@@ -37,7 +37,17 @@ export function errorResponse(message, status = 400, errors = undefined) {
  */
 export function handleApiError(error) {
   if (error instanceof ServiceError) {
-    return errorResponse(error.message, error.statusCode, error.errors);
+    const headers = error.retryAfterSeconds
+      ? { "Retry-After": String(error.retryAfterSeconds) }
+      : undefined;
+    return Response.json(
+      {
+        success: false,
+        message: error.message,
+        ...(error.errors ? { errors: error.errors } : {}),
+      },
+      { status: error.statusCode, ...(headers ? { headers } : {}) }
+    );
   }
 
   if (error instanceof SyntaxError) {
@@ -61,6 +71,12 @@ export function handleApiError(error) {
 
   if (error?.code === 11000) {
     const keys = Object.keys(error.keyPattern || error.keyValue || {});
+    if (keys.includes("esp32DeviceId") && !keys.includes("relayNumber")) {
+      return errorResponse(
+        "An ESP32 controller with this esp32DeviceId already exists",
+        409
+      );
+    }
     if (keys.includes("esp32DeviceId") || keys.includes("relayNumber")) {
       return errorResponse(
         "This ESP32 device ID and relay number are already assigned",
