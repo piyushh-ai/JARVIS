@@ -27,7 +27,7 @@ export default function BottomNav() {
               <Link
                 href={href}
                 aria-current="page"
-                className="flex min-h-[48px] w-full flex-col items-center justify-center gap-1 rounded-xl px-2 py-1.5 text-[11px] font-medium text-cyan-primary bg-cyan-primary/12 hud-border-active transition-colors"
+                className="flex min-h-[48px] w-full flex-col items-center justify-center gap-1 rounded-xl px-1 sm:px-2 py-1.5 text-[11px] font-medium text-cyan-primary bg-cyan-primary/12 hud-border-active transition-colors"
               >
                 <Icon className="h-4 w-4 text-cyan-primary" aria-hidden="true" />
                 <span className="truncate tracking-wide">{label}</span>
@@ -37,10 +37,11 @@ export default function BottomNav() {
                 type="button"
                 disabled
                 aria-disabled="true"
+                aria-label={`${label} (coming soon)`}
                 title={`${label} (coming soon)`}
-                className="flex min-h-[48px] w-full flex-col items-center justify-center gap-1 rounded-xl px-2 py-1.5 text-[11px] font-medium text-muted/60 border border-transparent select-none cursor-not-allowed"
+                className="flex min-h-[48px] w-full flex-col items-center justify-center gap-1 rounded-xl px-1 sm:px-2 py-1.5 text-[11px] font-medium text-muted/85 border border-transparent select-none cursor-not-allowed"
               >
-                <Icon className="h-4 w-4 opacity-70" aria-hidden="true" />
+                <Icon className="h-4 w-4 opacity-75" aria-hidden="true" />
                 <span className="truncate tracking-wide">{label}</span>
               </button>
             )}
