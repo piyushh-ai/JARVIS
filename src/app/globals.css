@@ -1,26 +1,191 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Core Palette */
+  --bg-primary: #05080f;
+  --bg-surface: #0b1220;
+  --accent-cyan: #00e5ff;
+  --accent-blue: #1677ff;
+  --text-primary: #eafbff;
+  --text-muted: #8295a8;
+
+  /* Derived Surface, Border & Glow Tokens */
+  --bg-surface-elevated: rgba(11, 18, 32, 0.86);
+  --border-subtle: rgba(0, 229, 255, 0.14);
+  --border-strong: rgba(0, 229, 255, 0.34);
+  --border-muted: rgba(130, 149, 168, 0.2);
+  --grid-line: rgba(0, 229, 255, 0.045);
+  --glow-cyan-sm: 0 0 12px rgba(0, 229, 255, 0.14);
+  --glow-cyan-md: 0 0 22px rgba(0, 229, 255, 0.22);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-background: var(--bg-primary);
+  --color-surface: var(--bg-surface);
+  --color-foreground: var(--text-primary);
+  --color-muted: var(--text-muted);
+  --color-cyan-primary: var(--accent-cyan);
+  --color-blue-secondary: var(--accent-blue);
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-orbitron), ui-sans-serif, system-ui, sans-serif;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    font-size: 16px;
+    scroll-behavior: smooth;
+    color-scheme: dark;
+    background-color: var(--bg-primary);
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    margin: 0;
+    padding: 0;
+    min-height: 100dvh;
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    line-height: 1.5;
+    overflow-x: clip;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-display);
+    letter-spacing: 0.03em;
+    color: var(--text-primary);
+  }
+
+  a,
+  button {
+    touch-action: manipulation;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent-cyan);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background-color: rgba(0, 229, 255, 0.24);
+    color: var(--text-primary);
+  }
+
+  /* Custom Scrollbar */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 229, 255, 0.24) var(--bg-primary);
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: var(--bg-primary);
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: rgba(0, 229, 255, 0.24);
+    border-radius: 9999px;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 229, 255, 0.45);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+@layer utilities {
+  /* Typography helper */
+  .font-display {
+    font-family: var(--font-display);
+  }
+
+  /* Reusable Surface & Border Styles */
+  .hud-surface {
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+  }
+
+  .hud-surface-elevated {
+    background-color: var(--bg-surface-elevated);
+    border: 1px solid var(--border-subtle);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+  }
+
+  .hud-border {
+    border: 1px solid var(--border-subtle);
+  }
+
+  .hud-border-active {
+    border: 1px solid var(--border-strong);
+  }
+
+  .hud-divider {
+    border-color: var(--border-muted);
+  }
+
+  /* Subtle Cyan Glow Utilities */
+  .glow-cyan-sm {
+    box-shadow: var(--glow-cyan-sm);
+  }
+
+  .glow-cyan {
+    box-shadow: var(--glow-cyan-md);
+  }
+
+  .glow-cyan-text {
+    text-shadow: 0 0 12px rgba(0, 229, 255, 0.35);
+  }
+
+  /* Subtle Futuristic Background Grid */
+  .bg-hud-grid {
+    background-color: var(--bg-primary);
+    background-image:
+      linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+
+  /* Mobile-first Content Container */
+  .hud-container {
+    width: 100%;
+    margin-inline: auto;
+    padding-inline: 1rem;
+  }
+
+  @media (min-width: 640px) {
+    .hud-container {
+      padding-inline: 1.5rem;
+    }
+
+    .bg-hud-grid {
+      background-size: 36px 36px;
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .hud-container {
+      max-width: 80rem;
+      padding-inline: 2rem;
+    }
+  }
 }

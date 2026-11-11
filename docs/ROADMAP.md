@@ -6,13 +6,16 @@
 - [x] Organize application source under `src/`
 - [x] Establish documentation (`docs/ARCHITECTURE.md`, `docs/ROADMAP.md`) and `.env.example`
 
-## Phase 2: Core Features
+## Phase 2: Frontend HUD & Animations
 
-- [ ] Define core domain workflows and UI layout
-- [ ] Add application components and server/API routes as needed
+- [x] Global design system (`Orbitron` + `Inter`, cyan/navy HUD palette, Tailwind CSS v4 tokens)
+- [x] Mobile-first dashboard foundation (`Header`, `AICore`, `RoomOverview`, `DeviceCard`, `BottomNav`)
+- [x] Production UI redesign and responsive polish (`360px`–`1440px`)
+- [x] GSAP animation foundation (ring rotation, core pulse, radial scan, entrance stagger, micro-interactions, reduced-motion support)
 
-## Phase 3: Polish & Deployment
+## Phase 3: Hardware & AI Integrations (Pending)
 
-- [ ] Add automated testing and CI checks
-- [ ] Prepare production environment configuration and deployment
-
+- [ ] Real ESP32 device communication and live telemetry sync
+- [ ] AI assistant and voice command integration
+- [ ] Automation rules engine, persistent database storage, and sub-page routes (`Assistant`, `Automation`, `Settings`)
+- [ ] Automated testing, CI checks, and production deployment
