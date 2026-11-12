@@ -74,3 +74,8 @@ Body: raw WAV bytes, not JSON or multipart. Maximum request size: 384 KB.
 ## Security and privacy boundary
 
 The ESP32 bearer token authenticates the controller, not the speaker. This prototype requires a spoken PIN as a second factor and attributes the action to the controller's registered Home owner. It is not speaker biometrics and it is not suitable for high-risk actuators. Raw audio is held in memory for transcription and is not saved to MongoDB or disk. The speech provider receives the audio to perform transcription.
+
+
+## Continuous microphone task
+
+Microphone I2S sampling runs in a dedicated FreeRTOS task on core 1, independent of relay polling and heartbeat requests in the main loop. Voice uploads use a separate TLS/HTTP client to avoid concurrent access to the main HTTP client.
