@@ -313,7 +313,7 @@ export async function POST(request) {
           await persistEsp32VoiceTurn({
             sessionId: session.conversation?._id, userId: String(controller.ownerId), homeId,
             controllerId: controller.esp32DeviceId, transcript: commandTranscript || transcript,
-            reply, actions: [], now: new Date(),
+            reply, actions: [], pinnedCount: session.conversation?.pinnedMessages?.length || 0, now: new Date(),
           });
         } catch (error) { console.error("[ESP32 voice] conversation save failed", error?.message); }
       });
@@ -334,7 +334,7 @@ export async function POST(request) {
           await persistEsp32VoiceTurn({
             sessionId: session.conversation?._id, userId: String(controller.ownerId), homeId,
             controllerId: controller.esp32DeviceId, transcript: commandTranscript || transcript,
-            reply: question, clarification: question, pendingClarification,
+            reply: question, clarification: question, pendingClarification, pinnedCount: session.conversation?.pinnedMessages?.length || 0,
           });
         } catch (error) { console.error("[ESP32 voice] clarification save failed", error?.message); }
       });
@@ -386,7 +386,7 @@ export async function POST(request) {
         const saved = await persistEsp32VoiceTurn({
           sessionId: session.conversation?._id, userId: String(controller.ownerId), homeId,
           controllerId: controller.esp32DeviceId, transcript: commandTranscript || transcript,
-          reply, actions: actionRecords, pendingClarification: null,
+          reply, actions: actionRecords, pendingClarification: null, pinnedCount: session.conversation?.pinnedMessages?.length || 0,
         });
         if (session.conversation?.messageCount > 16) {
           await refreshEsp32VoiceSummary({
