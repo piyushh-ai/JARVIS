@@ -166,7 +166,7 @@ async function callGroq({ audio, catalog, session, deadline }) {
 
   const schemaInstruction = [
     "Return one valid JSON object only, with these fields:",
-    '{"transcript":"string","wakeWordHeard":true,"kind":"command|question|none","actionConfidence":"high|low","actions":[{"deviceId":"string or null","sceneId":"string or null","action":"on|off"}],"clarification":"string or null","clarificationTarget":{"deviceId":"string or null","sceneId":"string or null","targetName":"string or null"} or null,"reply":"string"}.',
+    '{"transcript":"string","wakeWordHeard":"boolean","kind":"command|question|none","actionConfidence":"high|low","actions":[{"deviceId":"string or null","sceneId":"string or null","action":"on|off"}],"clarification":"string or null","clarificationTarget":{"deviceId":"string or null","sceneId":"string or null","targetName":"string or null"} or null,"reply":"string"}.',
     "Do not include markdown fences or extra keys. Use empty actions for questions and none. Never guess a device or scene ID.",
   ].join(" ");
 
