@@ -339,7 +339,7 @@ export async function POST(request) {
 
     const executeStarted = Date.now();
     const executionResults = await Promise.all(validated.map(async (action) => {
-      const idempotencyKey = `voice:${controller.esp32DeviceId}:${crypto.randomUUID()}`;
+      const controllerKey = crypto.createHash("sha256").update(controller.esp32DeviceId).digest("hex").slice(0, 16);\n      const idempotencyKey = `voice:${controllerKey}:${crypto.randomUUID()}`;
       if (action.device) {
         const { toggleDeviceById } = await import("@/services/deviceService");
         const result = await toggleDeviceById(action.device.id, {
