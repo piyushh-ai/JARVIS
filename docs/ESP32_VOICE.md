@@ -78,7 +78,7 @@ Each processed turn stores the wake-word-stripped user transcript, JARVIS reply,
 2. The rolling text summary.
 3. The latest 12 turns verbatim (each message bounded to keep prompt size controlled).
 
-After the session grows beyond roughly 16 messages, a cheap text-only Gemini summary refresh runs in `after()`. The voice response does not wait for conversation persistence or summary refresh. Cross-session long-term memory and semantic recall are phase 2; no LangChain or vector database is added to this request path.
+After the session grows beyond roughly 16 turns (32 stored messages), a cheap text-only Gemini summary refresh folds older turns incrementally in `after()`. The voice response does not wait for conversation persistence or summary refresh. Cross-session long-term memory and semantic recall are phase 2; no LangChain or vector database is added to this request path.
 
 Questions such as “kaun si light on hai?” and “mera pehla sawal kya tha?” are answered by the same audio+catalog+context Gemini call. The legacy `/assistant` text-chat route is not changed.
 
