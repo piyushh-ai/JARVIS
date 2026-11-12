@@ -43,7 +43,7 @@ export function useCollectionResource({
   }, []);
 
   const fetchItems = useCallback(
-    async (overrideFilters) => {
+    async (overrideFilters, { silent = false } = {}) => {
       abortControllerRef.current?.abort();
       const controller = new AbortController();
       abortControllerRef.current = controller;
@@ -54,8 +54,10 @@ export function useCollectionResource({
           ? cleanParams(overrideFilters)
           : JSON.parse(filterKey);
 
-      setLoading(true);
-      setError(null);
+      if (!silent) {
+        setLoading(true);
+        setError(null);
+      }
 
       try {
         const list = await api.list(activeFilters, {
@@ -76,10 +78,14 @@ export function useCollectionResource({
         ) {
           return [];
         }
-        setError(err?.message || "Failed to load data");
-        throw err;
+        if (!silent) {
+          setError(err?.message || "Failed to load data");
+          throw err;
+        }
+        return [];
       } finally {
         if (
+          !silent &&
           mountedRef.current &&
           currentRequestId === requestIdRef.current
         ) {
@@ -217,8 +223,21 @@ export function useCollectionResource({
     setLastFetchedAt(Date.now());
   }, []);
 
+  const patchItem = useCallback((id, updater) => {
+    if (!mountedRef.current || !id) return;
+    setItems((prev) =>
+      prev.map((entry) => {
+        if (entry._id !== id) return entry;
+        return typeof updater === "function"
+          ? updater(entry)
+          : { ...entry, ...updater };
+      })
+    );
+  }, []);
+
   return {
     items,
+    setItems,
     loading,
     mutating,
     error,
@@ -232,6 +251,7 @@ export function useCollectionResource({
     deleteItem,
     prependItem,
     replaceItem,
+    patchItem,
     setMutationError,
   };
 }

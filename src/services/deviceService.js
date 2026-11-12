@@ -39,7 +39,9 @@ async function assertHardwareMappingAllowed({
 
   if (!hasEspId) return;
 
-  const controller = await Controller.findOne({ esp32DeviceId }).lean();
+  const controller = await Controller.findOne({ esp32DeviceId })
+    .select("_id homeId status")
+    .lean();
   if (!controller) {
     throw new ServiceError(
       "Referenced ESP32 controller is not registered. Provision the controller first.",
@@ -210,7 +212,7 @@ export async function toggleDeviceById(
   const nextAction =
     data.desiredState ?? (existing.desiredState === "on" ? "off" : "on");
 
-  const { command, idempotentReplay } = await enqueueCommand(
+  const { command, idempotentReplay, supersededByNewer } = await enqueueCommand(
     {
       deviceId: String(existing._id),
       action: nextAction,
@@ -218,14 +220,16 @@ export async function toggleDeviceById(
       ttlSeconds: data.ttlSeconds,
       ...(data.idempotencyKey ? { idempotencyKey: data.idempotencyKey } : {}),
     },
-    { homeId, ownerId, now }
+    { homeId, ownerId, now, prefetchedDevice: existing }
   );
 
-  const updatedDevice = await Device.findByIdAndUpdate(
-    existing._id,
-    { $set: { desiredState: command.action } },
-    { returnDocument: "after", runValidators: true }
-  ).lean();
+  const updatedDevice = supersededByNewer
+    ? await Device.findById(existing._id).lean()
+    : await Device.findByIdAndUpdate(
+        existing._id,
+        { $set: { desiredState: command.action } },
+        { returnDocument: "after", runValidators: true }
+      ).lean();
 
   return {
     device: updatedDevice,

@@ -103,6 +103,10 @@ export async function connectDB() {
       .connect(mongoUri, {
         bufferCommands: false,
         maxPoolSize: 10,
+        minPoolSize: 1,
+        maxIdleTimeMS: 60000,
+        connectTimeoutMS: 5000,
+        socketTimeoutMS: 10000,
         serverSelectionTimeoutMS: 5000,
       })
       .then((mongooseInstance) => {

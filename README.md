@@ -26,10 +26,13 @@ jarvis/
 │   │   │   │   ├── controllers/
 │   │   │   │   │   ├── route.js
 │   │   │   │   │   └── [id]/
+│   │   │   │   │       ├── route.js
 │   │   │   │   │       ├── revoke/route.js
 │   │   │   │   │       └── rotate/route.js
 │   │   │   │   ├── heartbeat/route.js
 │   │   │   │   └── status/route.js
+│   │   │   ├── diagnostics/
+│   │   │   │   └── route.js
 │   │   │   ├── health/
 │   │   │   │   └── route.js
 │   │   │   ├── homes/
@@ -87,12 +90,16 @@ jarvis/
 │   │   │   └── session.js
 │   │   ├── db/
 │   │   │   └── connect.js
+│   │   ├── hardware/
+│   │   │   └── relayModules.js
 │   │   ├── utils/
 │   │   │   ├── apiResponse.js
 │   │   │   ├── rateLimit.js
+│   │   │   ├── telemetry.js
 │   │   │   └── validation.js
 │   │   └── motion.js
 │   ├── models/
+│   │   ├── AutomationRule.js
 │   │   ├── Command.js
 │   │   ├── Controller.js
 │   │   ├── Home.js
@@ -104,6 +111,13 @@ jarvis/
 │   ├── scripts/
 │   │   └── migrate-legacy-home.mjs
 │   ├── services/
+│   │   ├── ai/
+│   │   │   ├── assistantService.js
+│   │   │   ├── deviceTools.js
+│   │   │   ├── homeContextService.js
+│   │   │   └── roomTools.js
+│   │   ├── automation/
+│   │   │   └── automationService.js
 │   │   ├── authApi.js
 │   │   ├── authService.js
 │   │   ├── commandService.js
@@ -141,9 +155,9 @@ The primary route (`/`) delivers a mobile-first smart room HUD connected to the 
 - **GSAP Animation Features:** Multi-speed concentric AI Core ring rotation (with stationary central `JARVIS` branding), soft core glow pulse, lightweight radial scanning sweep, coordinated landmark entrance, post-load device card stagger, and tactile desktop hover / mobile press / toggle state micro-interactions—all wrapped in `gsap.context()` with `prefers-reduced-motion` support.
 - **Responsive Design Support:** Mobile-first layout tuned across small phones (`360px`, `390px`, `430px`), tablets (`768px`), and desktop (`1440px`) without horizontal overflow, transitioning from a single-column mobile stack into a balanced 2-column desktop HUD grid with a centered floating bottom dock.
 - **MongoDB-Backed Room Management:** Lists all smart rooms in the active Home with name, description, accurate assigned device count, and per-room device chips (`RoomManagementSection`, `RoomFormModal`), supports room filtering into the devices grid, and enforces backend `409` safe deletion (blocking removal when devices remain assigned without silently deleting or reassigning devices).
-- **MongoDB-Backed Device Management & Command Wiring:** Lists persisted devices in the active Home (`name`, `type`, room name, `connectionStatus`, `desiredState`, `reportedState`, mapped ESP32 controller ID + relay `#` or unmapped indicator), prevents duplicate relay or cross-Home controller mapping in `DeviceFormModal`, and connects device ON/OFF toggles directly to `POST /api/devices/[id]/toggle` (`useDevices().toggleDevice()`). Toggling validates an active mapped ESP32 controller & relay, supersedes stale pending commands, enforces `idempotencyKey` deduplication, updates `desiredState`, queues a `pending` `Command`, and leaves `reportedState` untouched until an authenticated ESP32 `ACK` arrives (rejecting unmapped/revoked devices cleanly without faking physical state).
-- **ESP32 Controller Provisioning UI (`ControllerManagementSection`, `ControllerProvisionModal`):** Displays Home-scoped controllers with online/offline/awaiting-heartbeat/revoked status, `tokenPrefix`, `lastSeen`, `firmwareVersion`, Relay Channel 1 hardware config (`gpioPin`, unassumed `activeLevel` polarity, `safeBootState: "off"`), and mapped devices. Authorized Home owners/admins can provision controllers, view/copy the generated bearer token ONCE inside an ephemeral reveal modal (never written to browser storage), rotate tokens, or revoke compromised boards.
-- **Current QA & Testing Status (Step 24A Verified):** ESLint (`npm run lint`), production build (`npm run build`), `.next/static` bundle secret scan, HTTP-only session auth, Home `owner`/`admin`/`member` RBAC, authenticated controller provisioning & token rotation/revocation, duplicate ESP32 ID & duplicate relay rejections, cross-Home isolation, toggle-to-command queuing with idempotency & stale supersede, honest `reportedState` preservation prior to ESP32 ACK, and full ESP32 polling/ACK lifecycle pass against live `next start` + MongoDB Atlas. Note: live interactive Chrome DevTools verification could not execute because headless remote debugging (`DevToolsActivePort`) was unavailable on the host. Remaining tasks: flash bench-verified `ESP32-WROOM-32` C++ firmware and run physical hardware-in-the-loop verification.
+- **MongoDB-Backed Device Management & Optimistic Command Wiring:** Lists persisted devices in the active Home (`name`, `type`, room name, `connectionStatus`, `desiredState`, `reportedState`, mapped ESP32 controller ID + relay `#` or unmapped indicator), prevents duplicate relay or cross-Home controller mapping in `DeviceFormModal`, and connects device ON/OFF toggles directly to `POST /api/devices/[id]/toggle` via `useDevices().toggleDevice()`. Toggling updates UI `desiredState` optimistically (`< 16 ms` perceived response) with per-device toggle queuing, rollback on error, explicit **Pending HW ACK** / **HW Synced** / **Cmd Failed** badges, and visibility-aware adaptive background reconciliation polling (`2s` -> `5s`, `0` idle polling when synced). Backend validates an active mapped ESP32 controller & relay, supersedes stale pending commands safely with total ordering, enforces `idempotencyKey` deduplication, updates `desiredState`, queues a `pending` `Command`, and leaves `reportedState` strictly hardware-ACK-driven.
+- **ESP32 Controller Provisioning UI (`ControllerManagementSection`, `ControllerProvisionModal`):** Displays Home-scoped controllers with online/offline/awaiting-heartbeat/revoked status, `tokenPrefix`, `lastSeen`, `firmwareVersion`, Relay Channel 1 config (bench-verified reference `GPIO 13`, Active `LOW`, `safeBootState: "off"`), dual 4-channel expansion readiness (`Module A CH 1-4`, `Module B CH 5-8` unverified beyond CH 1), and mapped devices. Authorized Home owners/admins can provision controllers, view/copy the generated bearer token ONCE inside an ephemeral reveal modal, update config (`PATCH /api/esp32/controllers/[id]`), rotate tokens, or revoke compromised boards.
+- **Current QA & Performance Status:** ESLint (`npm run lint`), production build (`npm run build`), `.next/static` bundle secret scan, HTTP security headers (`next.config.mjs`), `16 KB` payload limits (`413`), Home `owner`/`admin`/`member` RBAC + diagnostics (`GET /api/diagnostics`), ESR-indexed Command polling (`69.7 ms` p50 empty poll, `72.3 ms` p50 claim vs ~1200–1300 ms pre-audit baseline) and optimistic ACK (`106.3 ms` p50 vs ~1500–1700 ms baseline), AI/Automation permissioned service seams (`src/services/ai/*`, `src/services/automation/*`), and full E2E hardware command lifecycle pass against `next start` + MongoDB Atlas. Remaining tasks: bench-verify channels 2–8, flash `ESP32-WROOM-32` firmware, live Chrome browser QA, and wire real LLM/Cron integrations.
 
 ## Screenshots
 
@@ -163,6 +177,7 @@ JARVIS uses **Next.js App Router Route Handlers** (`src/app/api/`) instead of a 
   - `Device` — Smart-room endpoints (`name`, `type`, `roomId`, `homeId`, `ownerId`, optional ESP32 hardware mapping `esp32DeviceId` + `relayNumber`, `connectionStatus`, `lastSeen`, and separate `desiredState` vs. `reportedState` tracking).
   - `Command` — Persistent hardware command queue (`commandId` UUID, `deviceId`, `esp32DeviceId`, `homeId`, `ownerId`, `relayNumber`, `action` `on`/`off`, `status` `pending | processing | success | failed | expired`, `attemptCount`/`maxAttempts`, `processingStartedAt`/`processingUntil` lease, `expiresAt`, `retainUntil` 30-day TTL cleanup, `executedAt`, `result`, `errorReason`, partial unique `idempotencyKey`, timestamps).
   - `Controller` — Physical ESP32 controller identity (`esp32DeviceId`, optional `homeId` & `ownerId`, peppered SHA-256 `tokenHash` + `previousTokenHash` with `select: false`, `tokenPrefix`, `tokenVersion`, `status` `provisioning | active | revoked`, `relayConfig`, `firmwareVersion`, `lastRssi`, `lastBootReason`, `freeHeapBytes`, `uptimeSeconds`, `lastSeen`, timestamps).
+  - `AutomationRule` — Foundation schema for future external cron/sensor rules (`homeId`, `ownerId`, `name`, `enabled`, `triggerType`, `scheduleCron`, `offsetMinutes`, `timezone`, `manualOverrideUntil`, `actions`, `nextRunAt`, `lastTriggeredAt`, bounded `recentExecutions`, timestamps).
 - **Implemented now:** HTTP-only DB session authentication (`scrypt` + `timingSafeEqual`), multi-home role authorization (`owner` / `admin` / `member`), CSRF same-origin enforcement on state-changing routes, MongoDB distributed rate limiting, `GET /api/health`, `/api/auth/*`, `/api/homes*`, scoped `/api/rooms*` + `/api/devices*` + `/api/commands*`, Home owner/admin ESP32 controller provisioning UI (`ControllerManagementSection`, one-time token reveal), dashboard toggle-to-command queue wiring (`POST /api/devices/[id]/toggle`), and machine-authenticated ESP32 Hardware APIs (`/api/esp32/{heartbeat,commands/*,status}`).
 - **Pending Future Work:** Bench GPIO/polarity verification on physical relay modules, `ESP32-WROOM-32` Arduino/ESP-IDF C++ firmware, and hardware-in-the-loop QA. See [Architecture](docs/ARCHITECTURE.md).
 - **Auth & Home APIs (`/api/auth/*`, `/api/homes*`):**

@@ -1,6 +1,8 @@
 import mongoose from "mongoose";
 import { ServiceError } from "@/lib/utils/apiResponse";
+import { UNUSABLE_OUTPUT_GPIO_PINS } from "@/lib/hardware/relayModules";
 
+export const DEFAULT_MAX_JSON_BYTES = 16 * 1024;
 export const HOME_ROLES = ["owner", "admin", "member"];
 export const ASSIGNABLE_HOME_ROLES = ["admin", "member"];
 export const DEVICE_TYPES = ["light", "fan", "led", "other"];
@@ -18,10 +20,39 @@ export const HARDWARE_REPORTED_STATES = ["on", "off", "unknown"];
 const COMMAND_UUID_REGEX =
   /^cmd_[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$/;
 
-export async function parseJsonBody(request) {
+async function readBoundedText(request, maxBytes = DEFAULT_MAX_JSON_BYTES) {
+  const rawLength = request.headers?.get?.("content-length");
+  if (rawLength !== null && rawLength !== undefined) {
+    const parsedLength = Number(rawLength);
+    if (Number.isFinite(parsedLength) && parsedLength > maxBytes) {
+      throw new ServiceError(
+        `Request payload exceeds ${maxBytes} byte limit`,
+        413
+      );
+    }
+  }
+
+  let rawText = "";
+  try {
+    rawText = await request.text();
+  } catch {
+    throw new ServiceError("Unable to read request body", 400);
+  }
+
+  if (Buffer.byteLength(rawText, "utf8") > maxBytes) {
+    throw new ServiceError(
+      `Request payload exceeds ${maxBytes} byte limit`,
+      413
+    );
+  }
+
+  return rawText;
+}
+
+function parseJsonObjectText(rawText) {
   let body;
   try {
-    body = await request.json();
+    body = JSON.parse(rawText);
   } catch {
     throw new ServiceError("Request body must be valid JSON", 400);
   }
@@ -33,11 +64,24 @@ export async function parseJsonBody(request) {
   return body;
 }
 
+export async function parseJsonBody(
+  request,
+  { maxBytes = DEFAULT_MAX_JSON_BYTES } = {}
+) {
+  const rawText = await readBoundedText(request, maxBytes);
+  if (!rawText || !rawText.trim()) {
+    throw new ServiceError("Request body must be valid JSON", 400);
+  }
+  return parseJsonObjectText(rawText);
+}
+
 export function assertValidObjectId(value, label = "ID") {
+  const normalized =
+    value instanceof mongoose.Types.ObjectId ? value.toHexString() : value;
   if (
-    typeof value !== "string" ||
-    !/^[a-fA-F0-9]{24}$/.test(value) ||
-    !mongoose.isValidObjectId(value)
+    typeof normalized !== "string" ||
+    !/^[a-fA-F0-9]{24}$/.test(normalized) ||
+    !mongoose.isValidObjectId(normalized)
   ) {
     throw new ServiceError(`Invalid ${label}`, 400);
   }
@@ -396,30 +440,15 @@ export function validateCommandQueryFilters({
   return { query, limit: parsedLimit };
 }
 
-export async function parseOptionalJsonBody(request) {
-  let rawText = "";
-  try {
-    rawText = await request.text();
-  } catch {
-    throw new ServiceError("Unable to read request body", 400);
-  }
-
+export async function parseOptionalJsonBody(
+  request,
+  { maxBytes = DEFAULT_MAX_JSON_BYTES } = {}
+) {
+  const rawText = await readBoundedText(request, maxBytes);
   if (!rawText || !rawText.trim()) {
     return {};
   }
-
-  let body;
-  try {
-    body = JSON.parse(rawText);
-  } catch {
-    throw new ServiceError("Request body must be valid JSON", 400);
-  }
-
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
-    throw new ServiceError("Request body must be a JSON object", 400);
-  }
-
-  return body;
+  return parseJsonObjectText(rawText);
 }
 
 function assertOptionalBoundedNumber(value, fieldName, { min, max, integer = false } = {}) {
@@ -475,6 +504,12 @@ function validateRelayConfigList(relayConfig) {
         max: 39,
         integer: true,
       });
+      if (UNUSABLE_OUTPUT_GPIO_PINS.has(gpioPin)) {
+        throw new ServiceError(
+          `GPIO ${gpioPin} cannot be used as a relay output (SPI flash 6-11 or input-only 34-39)`,
+          400
+        );
+      }
       if (seenPins.has(gpioPin)) {
         throw new ServiceError(`Duplicate gpioPin ${gpioPin} in relayConfig`, 400);
       }
@@ -523,6 +558,26 @@ export function validateControllerProvisionPayload(body) {
     name: name ?? "",
     relayConfig,
   };
+}
+
+export function validateControllerPatchPayload(body) {
+  const updates = {};
+  if (body.name !== undefined) {
+    updates.name = assertCleanText(body.name, "Controller name", {
+      required: false,
+      max: 80,
+    });
+  }
+  if (body.relayConfig !== undefined) {
+    updates.relayConfig = validateRelayConfigList(body.relayConfig);
+  }
+  if (Object.keys(updates).length === 0) {
+    throw new ServiceError(
+      "Provide name or relayConfig to update controller",
+      400
+    );
+  }
+  return updates;
 }
 
 export function validateToggleDevicePayload(body = {}) {

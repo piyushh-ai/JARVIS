@@ -41,6 +41,7 @@ export default function DashboardClient({ initialAuth }) {
     mutating: devicesMutating,
     error: devicesError,
     lastFetchedAt: devicesLastFetchedAt,
+    syncStateByDevice,
     refresh: refreshDevices,
     createDevice,
     updateDevice,
@@ -386,6 +387,7 @@ export default function DashboardClient({ initialAuth }) {
               allDevices={allDevices}
               rooms={rooms}
               controllers={controllers}
+              syncStateByDevice={syncStateByDevice}
               loading={devicesLoading}
               mutating={devicesMutating}
               error={devicesError}

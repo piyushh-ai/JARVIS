@@ -449,6 +449,21 @@ export default function ControllerManagementSection({
                     </span>
                   </div>
 
+                  <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] text-muted">
+                    <span>Dual 4-Ch Expansion</span>
+                    <span className="text-muted/90">
+                      Module A (CH 1–4) · Module B (CH 5–8) —{" "}
+                      {(controller.relayConfig || []).filter(
+                        (ch) =>
+                          ch.relayNumber >= 2 &&
+                          ch.relayNumber <= 8 &&
+                          ch.gpioPin !== null &&
+                          ch.gpioPin !== undefined
+                      ).length}{" "}
+                      / 7 expansion ch verified
+                    </span>
+                  </div>
+
                   <div className="flex flex-wrap items-center gap-1.5">
                     <span className="text-[10px] uppercase tracking-wider text-muted">
                       Mapped Devices:

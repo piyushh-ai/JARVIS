@@ -7,7 +7,7 @@ import User from "@/models/User";
 
 export const SESSION_COOKIE_NAME = "jarvis_session";
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const LAST_USED_TOUCH_INTERVAL_MS = 60 * 1000;
+const LAST_USED_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
 
 export function hashSessionToken(rawToken) {
   const secret = process.env.SESSION_SECRET?.trim();
@@ -106,6 +106,7 @@ export async function getUserHomesSummary(userId) {
   const homes = await Home.find({
     $or: [{ ownerId: userId }, { "members.userId": userId }],
   })
+    .select("_id name ownerId members.userId members.role")
     .sort({ createdAt: 1 })
     .lean();
 
@@ -129,7 +130,7 @@ export async function getUserHomesSummary(userId) {
 
 /**
  * Resolves the currently authenticated user, verified DB session, and authorized Homes.
- * Returns null if the session cookie is missing, invalid, expired, revoked, or user is suspended.
+ * Runs user & home queries concurrently to minimize Atlas roundtrips.
  */
 export async function getCurrentUser() {
   const rawToken = await getRawSessionToken();
@@ -145,18 +146,25 @@ export async function getCurrentUser() {
     tokenHash,
     revokedAt: null,
     expiresAt: { $gt: now },
-  }).lean();
+  })
+    .select("_id userId currentHomeId lastUsedAt")
+    .lean();
 
   if (!session) {
     return null;
   }
 
-  const user = await User.findById(session.userId).lean();
+  const [user, homes] = await Promise.all([
+    User.findById(session.userId)
+      .select("_id name email role status currentHomeId")
+      .lean(),
+    getUserHomesSummary(session.userId),
+  ]);
+
   if (!user || user.status !== "active") {
     return null;
   }
 
-  const homes = await getUserHomesSummary(user._id);
   const preferredHomeId = session.currentHomeId || user.currentHomeId;
   const currentHome =
     homes.find((home) => String(home._id) === String(preferredHomeId)) ||

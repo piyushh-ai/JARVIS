@@ -45,6 +45,7 @@ export default function DeviceCard({
   device,
   roomName = "Unassigned Room",
   isBusy = false,
+  syncState = null,
   onToggleDesired,
   onEdit,
   onDelete,
@@ -59,6 +60,11 @@ export default function DeviceCard({
   const isDesiredOn = device.desiredState === "on";
   const reportedState = device.reportedState || "unknown";
   const isReportedOn = reportedState === "on";
+  const isMapped = Boolean(device.esp32DeviceId && device.relayNumber);
+  const syncStatus = syncState?.status || null;
+  const isPendingAck =
+    syncStatus === "queuing" ||
+    (isMapped && device.desiredState !== reportedState);
   const Icon = DEVICE_ICONS[device.type] ?? Cpu;
   const connBadge =
     CONNECTION_BADGES[device.connectionStatus] ?? CONNECTION_BADGES.unknown;
@@ -195,7 +201,6 @@ export default function DeviceCard({
 
         <button
           type="button"
-          disabled={isBusy}
           aria-pressed={isDesiredOn}
           aria-label={`${device.name} desired state: ${
             isDesiredOn ? "ON" : "OFF"
@@ -205,7 +210,7 @@ export default function DeviceCard({
           onPointerUp={handlePointerRelease}
           onPointerCancel={handlePointerRelease}
           onPointerLeave={handlePointerRelease}
-          className={`relative inline-flex h-8 w-14 shrink-0 items-center rounded-full p-1 transition-colors duration-200 cursor-pointer disabled:cursor-wait before:absolute before:-inset-y-1.5 before:-inset-x-1 before:content-[''] ${
+          className={`relative inline-flex h-8 w-14 shrink-0 items-center rounded-full p-1 transition-colors duration-200 cursor-pointer before:absolute before:-inset-y-1.5 before:-inset-x-1 before:content-[''] ${
             isDesiredOn
               ? "bg-cyan-primary/25 border border-cyan-primary"
               : "bg-white/10 border border-white/15"
@@ -293,6 +298,27 @@ export default function DeviceCard({
               Unmapped (No ESP32)
             </span>
           )}
+
+          {syncStatus === "failed" ? (
+            <span
+              title={syncState?.error || "Command failed"}
+              className="rounded-full border border-red-400/40 bg-red-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-red-300"
+            >
+              Cmd Failed
+            </span>
+          ) : syncStatus === "queuing" ? (
+            <span className="rounded-full border border-cyan-primary/35 bg-cyan-primary/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-cyan-primary animate-pulse">
+              Queuing
+            </span>
+          ) : isPendingAck ? (
+            <span className="rounded-full border border-amber-300/35 bg-amber-300/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-200">
+              Pending HW ACK
+            </span>
+          ) : isMapped ? (
+            <span className="rounded-full border border-cyan-primary/25 bg-cyan-primary/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-cyan-primary/90">
+              HW Synced
+            </span>
+          ) : null}
         </div>
 
         {confirmDelete ? (

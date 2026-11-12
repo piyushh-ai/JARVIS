@@ -11,6 +11,7 @@ import {
   ShieldAlert,
   X,
 } from "lucide-react";
+import { UNUSABLE_OUTPUT_GPIO_PINS } from "@/lib/hardware/relayModules";
 
 /**
  * Modal for owner/admin ESP32 controller registration (Relay Channel 1 initial test)
@@ -108,6 +109,12 @@ export default function ControllerProvisionModal({
       const n = Number(gpioPin);
       if (!Number.isInteger(n) || n < 0 || n > 39) {
         setValidationError("GPIO pin must be a whole integer between 0 and 39.");
+        return;
+      }
+      if (UNUSABLE_OUTPUT_GPIO_PINS.has(n)) {
+        setValidationError(
+          `GPIO ${n} cannot be driven as a relay output (SPI flash 6-11 or input-only 34-39).`
+        );
         return;
       }
       parsedGpio = n;
@@ -398,7 +405,7 @@ export default function ControllerProvisionModal({
                     step={1}
                     value={gpioPin}
                     onChange={(e) => setGpioPin(e.target.value)}
-                    placeholder="Verified GPIO (e.g. 26)"
+                    placeholder="Verified GPIO (e.g. 13 for Relay 1)"
                     className="w-full rounded-xl bg-background/80 hud-border px-3 py-2 text-sm text-foreground placeholder:text-muted/60 focus:border-cyan-primary focus:outline-none"
                   />
                 </div>
@@ -424,10 +431,11 @@ export default function ControllerProvisionModal({
               </div>
 
               <p className="text-[11px] leading-relaxed text-muted">
-                Configures Relay #1 only with{" "}
+                Bench-verified Relay #1 uses{" "}
+                <span className="text-foreground">GPIO 13 · Active LOW</span> with{" "}
                 <span className="text-foreground">safeBootState: off</span>.
-                Supply only bench-verified output GPIO pins (avoid SPI flash
-                6–11, UART0 1/3, strapping 0/2/12/15, input-only 34–39).
+                Dual 4-channel expansion (Module A CH 1–4, Module B CH 5–8) adds
+                channels 2–8 only after per-channel bench verification (never drive SPI flash 6–11 or input-only 34–39).
               </p>
             </div>
 

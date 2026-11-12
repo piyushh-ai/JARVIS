@@ -30,6 +30,7 @@ export default function DeviceManagementSection({
   allDevices = [],
   rooms = [],
   controllers = [],
+  syncStateByDevice = {},
   loading = false,
   mutating = false,
   error = null,
@@ -107,7 +108,6 @@ export default function DeviceManagementSection({
         ? `ui_${device._id}_${nextState}_${crypto.randomUUID()}`
         : `ui_${device._id}_${nextState}_${Date.now()}`;
 
-    setBusyId(device._id);
     try {
       const result = onToggleDevice
         ? await onToggleDevice(device._id, {
@@ -134,8 +134,6 @@ export default function DeviceManagementSection({
         type: "error",
         text: err?.message || `Failed to queue command for ${device.name}.`,
       });
-    } finally {
-      setBusyId(null);
     }
   };
 
@@ -382,6 +380,7 @@ export default function DeviceManagementSection({
                 roomNameMap.get(String(device.roomId)) || "Assigned Room"
               }
               isBusy={busyId === device._id}
+              syncState={syncStateByDevice?.[device._id] || null}
               onToggleDesired={handleToggleDesired}
               onEdit={openEditModal}
               onDelete={handleDelete}

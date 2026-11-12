@@ -112,13 +112,17 @@ export async function expireStaleCommands({
  */
 export async function enqueueCommand(
   payload,
-  { homeId, ownerId, now = new Date() } = {}
+  { homeId, ownerId, now = new Date(), prefetchedDevice = null } = {}
 ) {
   assertValidObjectId(homeId, "homeId");
   const data = validateCreateCommandPayload(payload);
   await connectDB();
 
-  const device = await Device.findById(data.deviceId).lean();
+  const device =
+    prefetchedDevice ||
+    (await Device.findById(data.deviceId)
+      .select("_id homeId ownerId esp32DeviceId relayNumber desiredState")
+      .lean());
   if (!device) {
     throw new ServiceError("Referenced device not found", 404);
   }
@@ -145,9 +149,15 @@ export async function enqueueCommand(
     );
   }
 
-  const controller = await Controller.findOne({
-    esp32DeviceId: mappedEspId,
-  }).lean();
+  const [controller, existingIdem] = await Promise.all([
+    Controller.findOne({ esp32DeviceId: mappedEspId })
+      .select("_id homeId status")
+      .lean(),
+    data.idempotencyKey
+      ? Command.findOne({ idempotencyKey: data.idempotencyKey }).lean()
+      : Promise.resolve(null),
+  ]);
+
   if (!controller) {
     throw new ServiceError(
       "Mapped ESP32 controller is not registered. Provision the controller first.",
@@ -162,31 +172,51 @@ export async function enqueueCommand(
     );
   }
 
-  if (data.idempotencyKey) {
-    const replay = await resolveMatchingIdempotency(
-      data.idempotencyKey,
-      device._id,
-      data.action,
-      now
-    );
-    if (replay) return replay;
-  }
-
-  await expireStaleCommands({ deviceId: device._id, now });
-
-  // Supersede older unstarted pending commands on the same device so latest intent wins
-  await Command.updateMany(
-    {
-      deviceId: device._id,
-      status: "pending",
-    },
-    {
-      $set: {
-        status: "expired",
-        errorReason: "Superseded by newer command request",
-      },
+  if (existingIdem) {
+    if (
+      String(existingIdem.deviceId) !== String(device._id) ||
+      existingIdem.action !== data.action
+    ) {
+      throw new ServiceError(
+        "Idempotency key is already bound to a different device or action",
+        409
+      );
     }
-  );
+
+    if (
+      (existingIdem.status === "pending" ||
+        existingIdem.status === "processing") &&
+      existingIdem.expiresAt <= now
+    ) {
+      const refreshed = await Command.findOneAndUpdate(
+        {
+          _id: existingIdem._id,
+          status: { $in: ["pending", "processing"] },
+          expiresAt: { $lte: now },
+        },
+        {
+          $set: {
+            status: "expired",
+            processingUntil: null,
+            errorReason: "Command expired before completion",
+          },
+        },
+        { returnDocument: "after" }
+      ).lean();
+
+      return {
+        command: refreshed || existingIdem,
+        idempotentReplay: true,
+        supersededByNewer: false,
+      };
+    }
+
+    return {
+      command: existingIdem,
+      idempotentReplay: true,
+      supersededByNewer: false,
+    };
+  }
 
   const expiresAt = new Date(now.getTime() + data.ttlSeconds * 1000);
   const retainUntil = new Date(now.getTime() + COMMAND_RETENTION_MS);
@@ -205,7 +235,62 @@ export async function enqueueCommand(
       ...(data.idempotencyKey ? { idempotencyKey: data.idempotencyKey } : {}),
     });
 
-    return { command: created.toObject(), idempotentReplay: false };
+    // Supersede strictly older unstarted pending commands on this device, while
+    // detecting if a strictly newer concurrent command already beat this write.
+    const [, newerCommandExists] = await Promise.all([
+      Command.updateMany(
+        {
+          deviceId: device._id,
+          status: "pending",
+          $or: [
+            { createdAt: { $lt: created.createdAt } },
+            { createdAt: created.createdAt, _id: { $lt: created._id } },
+          ],
+        },
+        {
+          $set: {
+            status: "expired",
+            processingUntil: null,
+            errorReason: "Superseded by newer command request",
+          },
+        }
+      ),
+      Command.exists({
+        deviceId: device._id,
+        status: { $in: ["pending", "processing", "success"] },
+        $or: [
+          { createdAt: { $gt: created.createdAt } },
+          { createdAt: created.createdAt, _id: { $gt: created._id } },
+        ],
+      }),
+    ]);
+
+    const commandObj = created.toObject();
+    if (newerCommandExists) {
+      await Command.updateOne(
+        { _id: created._id, status: "pending" },
+        {
+          $set: {
+            status: "expired",
+            processingUntil: null,
+            errorReason: "Superseded by concurrent newer command",
+          },
+        }
+      );
+      commandObj.status = "expired";
+      commandObj.errorReason = "Superseded by concurrent newer command";
+      return {
+        command: commandObj,
+        idempotentReplay: false,
+        supersededByNewer: true,
+      };
+    }
+
+    return {
+      command: commandObj,
+      idempotentReplay: false,
+      supersededByNewer: false,
+    };
   } catch (err) {
     if (err?.code === 11000 && data.idempotencyKey) {
       const concurrentReplay = await resolveMatchingIdempotency(
@@ -214,7 +299,9 @@ export async function enqueueCommand(
         data.action,
         now
       );
-      if (concurrentReplay) return concurrentReplay;
+      if (concurrentReplay) {
+        return { ...concurrentReplay, supersededByNewer: false };
+      }
     }
     throw err;
   }
@@ -282,7 +369,6 @@ export async function claimPendingCommands({
 
   const cleanEspId = esp32DeviceId.trim();
   await connectDB();
-  await expireStaleCommands({ esp32DeviceId: cleanEspId, now });
 
   const claimedList = [];
   const leaseUntil = new Date(now.getTime() + leaseMs);
@@ -310,10 +396,12 @@ export async function claimPendingCommands({
         $inc: { attemptCount: 1 },
       },
       {
-        sort: { createdAt: 1 },
+        sort: { createdAt: 1, _id: 1 },
         returnDocument: "after",
       }
-    ).lean();
+    )
+      .select("commandId deviceId relayNumber action attemptCount expiresAt")
+      .lean();
 
     if (!claimed) break;
 
@@ -405,49 +493,15 @@ export async function acknowledgeCommand({
   const cleanError = cleanOptionalText(errorReason, "errorReason");
 
   await connectDB();
-  await expireStaleCommands({ esp32DeviceId: cleanEspId, now });
 
-  const existing = await Command.findOne({ [field]: value }).lean();
-  if (!existing) {
-    throw new ServiceError("Command not found", 404);
-  }
-
-  if (
-    existing.esp32DeviceId !== cleanEspId ||
-    (deviceId !== undefined && String(existing.deviceId) !== String(deviceId))
-  ) {
-    throw new ServiceError("Command belongs to another device", 403);
-  }
-
-  if (relayNumber !== undefined && existing.relayNumber !== relayNumber) {
-    throw new ServiceError(
-      "Acknowledged relayNumber does not match command relayNumber",
-      400
-    );
-  }
-
-  if (existing.status === "expired" || existing.expiresAt <= now) {
-    throw new ServiceError("Cannot acknowledge an expired command", 409);
-  }
-
-  if (existing.status === "success" || existing.status === "failed") {
-    throw new ServiceError(
-      `Command has already been finalized with status "${existing.status}"`,
-      409
-    );
-  }
-
-  if (existing.status !== "processing") {
-    throw new ServiceError(
-      "Command must be claimed into processing before acknowledgement",
-      409
-    );
-  }
-
+  // Optimistic single-RTT update for valid claimed commands; falls back to a slim
+  // diagnostic lookup only when the transition guard rejects the ACK.
   const updatedCommand = await Command.findOneAndUpdate(
     {
-      _id: existing._id,
+      [field]: value,
       esp32DeviceId: cleanEspId,
+      ...(deviceId !== undefined ? { deviceId } : {}),
+      ...(relayNumber !== undefined ? { relayNumber } : {}),
       status: "processing",
       expiresAt: { $gt: now },
     },
@@ -465,6 +519,62 @@ export async function acknowledgeCommand({
   ).lean();
 
   if (!updatedCommand) {
+    const existing = await Command.findOne({ [field]: value })
+      .select("_id deviceId esp32DeviceId relayNumber status expiresAt")
+      .lean();
+
+    if (!existing) {
+      throw new ServiceError("Command not found", 404);
+    }
+
+    if (
+      existing.esp32DeviceId !== cleanEspId ||
+      (deviceId !== undefined && String(existing.deviceId) !== String(deviceId))
+    ) {
+      throw new ServiceError("Command belongs to another device", 403);
+    }
+
+    if (relayNumber !== undefined && existing.relayNumber !== relayNumber) {
+      throw new ServiceError(
+        "Acknowledged relayNumber does not match command relayNumber",
+        400
+      );
+    }
+
+    if (existing.status === "expired" || existing.expiresAt <= now) {
+      if (existing.status === "pending" || existing.status === "processing") {
+        await Command.updateOne(
+          {
+            _id: existing._id,
+            status: { $in: ["pending", "processing"] },
+            expiresAt: { $lte: now },
+          },
+          {
+            $set: {
+              status: "expired",
+              processingUntil: null,
+              errorReason: "Command expired before completion",
+            },
+          }
+        );
+      }
+      throw new ServiceError("Cannot acknowledge an expired command", 409);
+    }
+
+    if (existing.status === "success" || existing.status === "failed") {
+      throw new ServiceError(
+        `Command has already been finalized with status "${existing.status}"`,
+        409
+      );
+    }
+
+    if (existing.status !== "processing") {
+      throw new ServiceError(
+        "Command must be claimed into processing before acknowledgement",
+        409
+      );
+    }
+
     throw new ServiceError(
       "Command state changed concurrently before acknowledgement completed",
       409
@@ -484,9 +594,10 @@ export async function acknowledgeCommand({
           ...(cleanReported ? { reportedState: cleanReported } : {}),
         };
 
-  await Device.findByIdAndUpdate(updatedCommand.deviceId, {
-    $set: deviceTelemetryUpdate,
-  });
+  await Device.updateOne(
+    { _id: updatedCommand.deviceId },
+    { $set: deviceTelemetryUpdate }
+  );
 
   return updatedCommand;
 }

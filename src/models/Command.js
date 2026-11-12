@@ -116,12 +116,22 @@ const commandSchema = new mongoose.Schema(
   }
 );
 
-// Atomic claim queue index for ESP32 polling & stale-command expiry sweeps
-commandSchema.index({ esp32DeviceId: 1, status: 1, expiresAt: 1, createdAt: 1 });
+// ESR-aligned queue claim indexes: Equality (esp32DeviceId, status) -> Sort (createdAt) -> Range (expiresAt / processingUntil)
+commandSchema.index({ esp32DeviceId: 1, status: 1, createdAt: 1, expiresAt: 1 });
+commandSchema.index({
+  esp32DeviceId: 1,
+  status: 1,
+  processingUntil: 1,
+  createdAt: 1,
+});
+// Fast overdue-command expiration sweep scoped per controller or globally
+commandSchema.index({ esp32DeviceId: 1, status: 1, expiresAt: 1 });
+commandSchema.index({ status: 1, expiresAt: 1 });
 
 // Device & Home command history & pending supersede lookups
 commandSchema.index({ homeId: 1, status: 1, createdAt: -1 });
 commandSchema.index({ deviceId: 1, status: 1, createdAt: -1 });
+commandSchema.index({ deviceId: 1, createdAt: -1 });
 
 // Unique duplicate-submission guard when a non-empty string idempotencyKey is supplied
 commandSchema.index(

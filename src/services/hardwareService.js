@@ -8,6 +8,7 @@ import { ServiceError } from "@/lib/utils/apiResponse";
 import { enforceRateLimit, getClientIp } from "@/lib/utils/rateLimit";
 import {
   assertValidObjectId,
+  validateControllerPatchPayload,
   validateControllerProvisionPayload,
   validateEsp32StatusPayload,
   validateHeartbeatPayload,
@@ -76,18 +77,13 @@ function assertHttpsIfProxied(request) {
 
 /**
  * Authenticates every hardware /api/esp32/* request using X-Device-Id + Bearer token,
- * constant-time hash comparison, active status check, and per-device rate limiting.
+ * constant-time hash comparison, active status check, and concurrent rate limiting.
  */
 export async function authenticateEsp32Request(
   request,
-  { maxRequests = 60, windowMs = 60000 } = {}
+  { maxRequests = 120, windowMs = 60000 } = {}
 ) {
   assertHttpsIfProxied(request);
-
-  await enforceRateLimit(`esp32_ip:${getClientIp(request)}`, {
-    maxRequests: Math.max(maxRequests * 2, 120),
-    windowMs,
-  });
 
   const esp32DeviceId = request.headers.get("x-device-id")?.trim() || "";
   const authHeader = request.headers.get("authorization") || "";
@@ -101,6 +97,10 @@ export async function authenticateEsp32Request(
     rawToken.length < 16 ||
     rawToken.length > 256
   ) {
+    await enforceRateLimit(`esp32_ip:${getClientIp(request)}`, {
+      maxRequests: Math.max(maxRequests * 4, 240),
+      windowMs,
+    });
     throw new ServiceError(
       "Missing or malformed ESP32 authentication credentials",
       401
@@ -108,11 +108,25 @@ export async function authenticateEsp32Request(
   }
 
   const incomingHash = hashControllerToken(rawToken);
+  const clientIp = getClientIp(request);
   await connectDB();
 
-  const controller = await Controller.findOne({ esp32DeviceId })
-    .select("+tokenHash +previousTokenHash")
-    .lean();
+  // Execute IP brute-force throttling, per-IP+device rate limiting, and controller lookup in 1 parallel RTT.
+  const [, , controller] = await Promise.all([
+    enforceRateLimit(`esp32_ip:${clientIp}`, {
+      maxRequests: Math.max(maxRequests * 4, 240),
+      windowMs,
+    }),
+    enforceRateLimit(`esp32_auth:${clientIp}:${esp32DeviceId}`, {
+      maxRequests,
+      windowMs,
+    }),
+    Controller.findOne({ esp32DeviceId })
+      .select(
+        "_id esp32DeviceId name homeId ownerId status +tokenHash +previousTokenHash previousTokenExpiresAt"
+      )
+      .lean(),
+  ]);
 
   const now = new Date();
   const matchesPrimary =
@@ -131,11 +145,6 @@ export async function authenticateEsp32Request(
   ) {
     throw new ServiceError("Invalid or revoked ESP32 credentials", 401);
   }
-
-  await enforceRateLimit(`esp32_dev:${controller.esp32DeviceId}`, {
-    maxRequests,
-    windowMs,
-  });
 
   return sanitizeControllerDoc(controller);
 }
@@ -179,8 +188,40 @@ export async function provisionController(
 export async function listControllers({ homeId } = {}) {
   assertValidObjectId(homeId, "homeId");
   await connectDB();
-  const list = await Controller.find({ homeId }).sort({ createdAt: -1 }).lean();
-  return list.map(sanitizeControllerDoc);
+  const list = await Controller.find({ homeId })
+    .select(
+      "_id esp32DeviceId name homeId ownerId tokenPrefix tokenVersion status relayConfig firmwareVersion lastRssi lastBootReason freeHeapBytes uptimeSeconds lastSeen createdAt updatedAt"
+    )
+    .sort({ createdAt: -1 })
+    .lean();
+  return list;
+}
+
+export async function updateControllerRelayConfig(
+  idOrEspId,
+  payload,
+  { homeId } = {}
+) {
+  assertValidObjectId(homeId, "homeId");
+  const lookup = buildControllerLookupQuery(idOrEspId);
+  const updates = validateControllerPatchPayload(payload);
+  await connectDB();
+
+  const existing = await Controller.findOne(lookup)
+    .select("_id homeId status")
+    .lean();
+  if (!existing) {
+    throw new ServiceError("Controller not found", 404);
+  }
+  assertSameControllerHome(existing, homeId);
+
+  const updated = await Controller.findByIdAndUpdate(
+    existing._id,
+    { $set: updates },
+    { returnDocument: "after", runValidators: true }
+  ).lean();
+
+  return sanitizeControllerDoc(updated);
 }
 
 function buildControllerLookupQuery(idOrEspId) {
@@ -333,9 +374,8 @@ export async function recordHeartbeat(
       { esp32DeviceId: controller.esp32DeviceId },
       { $set: { connectionStatus: "online", lastSeen: now } }
     ),
+    expireStaleCommands({ esp32DeviceId: controller.esp32DeviceId, now }),
   ]);
-
-  await expireStaleCommands({ esp32DeviceId: controller.esp32DeviceId, now });
 
   const pendingCommandCount = await Command.countDocuments({
     esp32DeviceId: controller.esp32DeviceId,
@@ -374,11 +414,14 @@ export async function reportDeviceStatus(
     ...(data.rssi !== undefined ? { lastRssi: data.rssi } : {}),
   };
 
-  await Controller.updateOne({ _id: controller._id }, { $set: controllerSet });
-
-  const boundDevices = await Device.find({
-    esp32DeviceId: controller.esp32DeviceId,
-  }).lean();
+  const [, boundDevices] = await Promise.all([
+    Controller.updateOne({ _id: controller._id }, { $set: controllerSet }),
+    Device.find({
+      esp32DeviceId: controller.esp32DeviceId,
+    })
+      .select("_id name relayNumber desiredState")
+      .lean(),
+  ]);
 
   const deviceByRelay = new Map();
   for (const device of boundDevices) {

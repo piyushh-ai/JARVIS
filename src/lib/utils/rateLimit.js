@@ -25,6 +25,7 @@ async function incrementBucket(key, expiresAt) {
         upsert: true,
         returnDocument: "after",
         setDefaultsOnInsert: false,
+        projection: { count: 1 },
       }
     ).lean();
   } catch (error) {
@@ -32,7 +33,7 @@ async function incrementBucket(key, expiresAt) {
       return RateLimit.findOneAndUpdate(
         { key },
         { $inc: { count: 1 } },
-        { returnDocument: "after" }
+        { returnDocument: "after", projection: { count: 1 } }
       ).lean();
     }
     throw error;

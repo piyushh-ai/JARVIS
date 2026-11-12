@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import mongoose from "mongoose";
 import { connectDB } from "../lib/db/connect.js";
+import AutomationRule from "../models/AutomationRule.js";
 import Command from "../models/Command.js";
 import Controller from "../models/Controller.js";
 import Device from "../models/Device.js";
@@ -199,6 +200,7 @@ async function run() {
     Device.syncIndexes(),
     Command.syncIndexes(),
     Controller.syncIndexes(),
+    AutomationRule.syncIndexes(),
   ]);
 
   console.log(

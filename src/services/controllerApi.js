@@ -16,6 +16,15 @@ export async function provisionController(payload, config = {}) {
   return response?.data ?? null;
 }
 
+export async function updateController(idOrEspId, payload = {}, config = {}) {
+  const response = await apiClient.patch(
+    `/esp32/controllers/${encodeURIComponent(idOrEspId)}`,
+    payload,
+    config
+  );
+  return response?.data ?? null;
+}
+
 export async function rotateControllerToken(
   idOrEspId,
   payload = {},
