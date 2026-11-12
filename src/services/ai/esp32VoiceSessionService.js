@@ -4,7 +4,7 @@ import Conversation from "@/models/Conversation";
 const MAX_IDLE_MIN = 120;
 const MAX_MESSAGES = 100;
 
-export function getVoiceIdleMinutes() {
+export function isVoiceSessionActive(lastMessageAt, now = new Date(), idleMinutes = getVoiceIdleMinutes()) {\n  return Boolean(lastMessageAt) && now.getTime() - new Date(lastMessageAt).getTime() <= idleMinutes * 60 * 1000;\n}\n\nexport function getVoiceIdleMinutes() {
   const value = Number(process.env.ESP32_VOICE_SESSION_IDLE_MIN || 15);
   return Number.isFinite(value) ? Math.max(1, Math.min(MAX_IDLE_MIN, Math.floor(value))) : 15;
 }
@@ -15,11 +15,11 @@ export async function loadEsp32VoiceSession({ userId, homeId, controllerId, now 
     userId, homeId, source: "esp32-voice", controllerId,
   }).sort({ lastMessageAt: -1 }).lean();
   const idleMs = getVoiceIdleMinutes() * 60 * 1000;
-  if (!session || now.getTime() - new Date(session.lastMessageAt).getTime() > idleMs) {
+  if (!session || !isVoiceSessionActive(session.lastMessageAt, now, idleMs / 60000)) {
     return { conversation: null, context: [], summary: "", pendingClarification: null };
   }
   const messages = Array.isArray(session.messages) ? session.messages : [];
-  const pinned = messages.slice(0, 4);
+  const pinned = session.pinnedMessages?.length ? session.pinnedMessages : messages.slice(0, 4);
   const recent = messages.slice(-12);
   const merged = [...pinned, ...recent.filter((m) => !pinned.includes(m))];
   return {
@@ -64,7 +64,7 @@ export async function persistEsp32VoiceTurn({
       sessionStartedAt: now, lastMessageAt: assistantMessage.createdAt,
       firstUserMessage: String(transcript).slice(0, 1500),
       title: String(transcript).slice(0, 80) || "ESP32 Voice Session",
-      messages: [userMessage, assistantMessage], messageCount: 2,
+      messages: [userMessage, assistantMessage], pinnedMessages: [userMessage, assistantMessage], messageCount: 2,
       summary: "", pendingClarification: pendingClarification || null,
     });
   }
