@@ -489,7 +489,7 @@ export async function listConversations({ homeId, userId, limit = 40 } = {}) {
   await verifyHomeMembership({ homeId, userId });
   await connectDB();
 
-  const docs = await Conversation.find({ userId, homeId })
+  const docs = await Conversation.find({ userId, homeId, source: { $ne: "esp32-voice" } })
     .select("_id homeId title messageCount lastMessageAt createdAt updatedAt")
     .sort({ lastMessageAt: -1 })
     .limit(limit)
@@ -532,7 +532,7 @@ export async function getConversationById(
   await verifyHomeMembership({ homeId, userId });
   await connectDB();
 
-  const conv = await Conversation.findById(conversationId).lean();
+  const conv = await Conversation.findOne({ _id: conversationId, source: { $ne: "esp32-voice" } }).lean();
   if (!conv) {
     throw new ServiceError("Conversation not found", 404);
   }
@@ -557,7 +557,7 @@ export async function deleteConversationById(
   await verifyHomeMembership({ homeId, userId });
   await connectDB();
 
-  const conv = await Conversation.findById(conversationId)
+  const conv = await Conversation.findOne({ _id: conversationId, source: { $ne: "esp32-voice" } })
     .select("_id userId homeId title")
     .lean();
   if (!conv) {
