@@ -14,6 +14,7 @@ import {
   validateHeartbeatPayload,
 } from "@/lib/utils/validation";
 import { expireStaleCommands } from "@/services/commandService";
+import { invalidateVoiceCatalog } from "@/services/ai/esp32VoiceCache";
 
 function assertSameControllerHome(controller, homeId) {
   if (!controller?.homeId || String(controller.homeId) !== String(homeId)) {
@@ -343,6 +344,7 @@ export async function revokeController(
     { returnDocument: "after" }
   ).lean();
 
+  invalidateVoiceCatalog(homeId);
   const offlineRes = await Device.updateMany(
     { esp32DeviceId: updated.esp32DeviceId, homeId: updated.homeId },
     { $set: { connectionStatus: "offline", updatedAt: now } }
@@ -400,7 +402,7 @@ export async function recordHeartbeat(
     expireStaleCommands({ esp32DeviceId: controller.esp32DeviceId, now }),
   ]);
 
-  const pendingCommandCount = await Command.countDocuments({
+  invalidateVoiceCatalog(String(controller.homeId));\n  const pendingCommandCount = await Command.countDocuments({
     esp32DeviceId: controller.esp32DeviceId,
     status: "pending",
     expiresAt: { $gt: now },
