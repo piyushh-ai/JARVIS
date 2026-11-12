@@ -338,7 +338,7 @@ A reusable client API layer connects future UI views to the Next.js Route Handle
 
 Firmware v1.5.0 uploads 8 kHz mono PCM16 WAV (0.5–4 seconds, maximum 256 KB) to `POST /api/esp32/voice`. The server uses one Gemini audio-understanding call with a lean Home device/room/scene catalog, validates every returned target against that Home, and queues commands through the existing device/scene services. Questions use the existing assistant service; direct commands do not require a second LLM call.
 
-There is no spoken PIN. The wake-word gate defaults to `jarvis` and is enabled by default. Configure `ESP32_VOICE_WAKE_WORD` (default `jarvis`) and `ESP32_VOICE_REQUIRE_WAKE_WORD` (default `true`) in Vercel. Common wake-word mishearings are accepted. Missing wake word and unintelligible/background audio return HTTP 200 with `execution: "ignored"`; ambiguous targets return `needs_clarification`.
+The wake-word gate defaults to `jarvis` and is enabled by default. Configure `ESP32_VOICE_WAKE_WORD` (default `jarvis`) and `ESP32_VOICE_REQUIRE_WAKE_WORD` (default `true`) in Vercel. Common wake-word mishearings are accepted. Missing wake word and unintelligible/background audio return HTTP 200 with `execution: "ignored"`; ambiguous targets return `needs_clarification`.
 
 The endpoint keeps the existing `X-Device-Id` + Bearer-token authentication and Home-scoped command queue. See [ESP32 Voice Control](docs/ESP32_VOICE.md).
 
