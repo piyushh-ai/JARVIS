@@ -1,6 +1,6 @@
 export function normalizeVoiceText(value) {
   return String(value || "").toLocaleLowerCase("en-IN").normalize("NFKC")
-    .replace(/[’']/g, "").replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
+    .replace(/[’']/g, "").replace(/[^\p{L}\p{M}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
 }
 
 const WAKE_WORD_ALIASES = ["jarvis", "jarvish", "jarwis", "jarvas", "javis", "jarviss", "जार्विस"];
