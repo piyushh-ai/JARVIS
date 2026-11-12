@@ -32,7 +32,7 @@ export async function loadEsp32VoiceSession({ userId, homeId, controllerId, now 
 
 export async function persistEsp32VoiceTurn({
   sessionId, userId, homeId, controllerId, transcript, reply, actions = [],
-  clarification = null, pendingClarification = null, now = new Date(),
+  clarification = null, pendingClarification = null, pinnedCount = 0, now = new Date(),
 }) {
   await connectDB();
   const actionText = actions.length
