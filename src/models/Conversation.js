@@ -113,7 +113,7 @@ const conversationSchema = new mongoose.Schema(
 );
 
 conversationSchema.index({ userId: 1, homeId: 1, lastMessageAt: -1 });
-conversationSchema.index({ userId: 1, homeId: 1, source: 1, controllerId: 1, lastMessageAt: -1 });
+conversationSchema.index({ userId: 1, homeId: 1, source: 1, lastMessageAt: -1 });\nconversationSchema.index({ userId: 1, homeId: 1, source: 1, controllerId: 1, lastMessageAt: -1 });
 conversationSchema.index({ _id: 1, userId: 1, homeId: 1 });
 
 const Conversation =
