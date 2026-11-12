@@ -94,10 +94,14 @@ export async function POST(request) {
 
     const transcription = await transcribeAudioBuffer(audioBytes, contentType);
     const transcript = transcription.transcript || "";
+    const safeTranscription = {
+      ...safeTranscription,
+      transcript: redactSpokenPin(transcript),
+    };
     if (!transcript) {
       return withNoStore(successResponse("No intelligible speech detected", {
         esp32DeviceId: controller.esp32DeviceId,
-        ...transcription,
+        ...safeTranscription,
         execution: "not_executed",
         reason: "empty_transcript",
       }));
@@ -107,7 +111,7 @@ export async function POST(request) {
     if (!/^\d{6,8}$/.test(expectedPin)) {
       return withNoStore(successResponse("Voice control is not configured", {
         esp32DeviceId: controller.esp32DeviceId,
-        ...transcription,
+        ...safeTranscription,
         execution: "not_executed",
         reason: "ESP32_VOICE_PIN_not_configured",
       }));
@@ -123,7 +127,7 @@ export async function POST(request) {
       }
       return withNoStore(successResponse("Transcript received; no command executed", {
         esp32DeviceId: controller.esp32DeviceId,
-        ...transcription,
+        ...safeTranscription,
         execution: "not_executed",
         reason: parsed.reason,
       }));
