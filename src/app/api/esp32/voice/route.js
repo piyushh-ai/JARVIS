@@ -67,10 +67,10 @@ function extractVoiceCommand(transcript, expectedPin) {
 
 export async function POST(request) {
   try {
-    const controller = await authenticateEsp32Request(request, {
-      maxRequests: 8,
-      windowMs: 60 * 1000,
-    });
+    // Keep the shared hardware-authentication bucket at its normal limit.
+    // The 8/minute voice-specific limiter below must not throttle command polling,
+    // heartbeat, status, or ACK requests that share the same auth bucket.
+    const controller = await authenticateEsp32Request(request);
     if (!controller.homeId || !controller.ownerId) {
       throw new ServiceError("Controller must be linked to a Home owner", 403);
     }
