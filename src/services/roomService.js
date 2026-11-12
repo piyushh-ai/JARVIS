@@ -35,6 +35,7 @@ export async function createRoom(payload, { homeId, ownerId } = {}) {
     homeId,
     ownerId,
   });
+  invalidateVoiceCatalog(homeId);
   return room.toObject();
 }
 
@@ -70,6 +71,7 @@ export async function updateRoomById(id, payload, { homeId } = {}) {
     { returnDocument: "after", runValidators: true }
   ).lean();
 
+  invalidateVoiceCatalog(homeId);
   return updated;
 }
 
@@ -93,5 +95,6 @@ export async function deleteRoomById(id, { homeId } = {}) {
   }
 
   await Room.findByIdAndDelete(id);
+  invalidateVoiceCatalog(homeId);
   return existing;
 }
