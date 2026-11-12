@@ -5,7 +5,7 @@ import { isVoiceSessionActive } from "@/services/ai/esp32VoiceLogic";
 const MAX_IDLE_MIN = 120;
 const MAX_MESSAGES = 100;
 
-export function isVoiceSessionActive(lastMessageAt, now = new Date(), idleMinutes = getVoiceIdleMinutes()) {\n  return Boolean(lastMessageAt) && now.getTime() - new Date(lastMessageAt).getTime() <= idleMinutes * 60 * 1000;\n}\n\nexport function getVoiceIdleMinutes() {
+export function getVoiceIdleMinutes() {
   const value = Number(process.env.ESP32_VOICE_SESSION_IDLE_MIN || 15);
   return Number.isFinite(value) ? Math.max(1, Math.min(MAX_IDLE_MIN, Math.floor(value))) : 15;
 }
