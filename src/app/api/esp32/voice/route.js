@@ -13,7 +13,7 @@ import { parseAndPrepareVoiceWav } from "@/services/ai/esp32VoiceAudio";
 import { getCachedVoiceCatalog, setCachedVoiceCatalog } from "@/services/ai/esp32VoiceCache";
 import { loadEsp32VoiceSession, persistEsp32VoiceTurn, refreshEsp32VoiceSummary } from "@/services/ai/esp32VoiceSessionService";
 import { claimPendingCommands } from "@/services/commandService";
-import { normalizeVoiceText as normalizeText, findWakeWord, parseFollowupAction, detectExplicitAction, hasConflictingExplicitActions, toInlineVoiceCommands } from "@/services/ai/esp32VoiceLogic";
+import { normalizeVoiceText as normalizeText, findWakeWord, parseFollowupAction, detectExplicitAction, hasConflictingExplicitActions, toInlineVoiceCommands, makeVoiceResponseData } from "@/services/ai/esp32VoiceLogic";
 
 export const maxDuration = 30;
 // Keep this aligned with the MongoDB Atlas cluster's region.
@@ -201,17 +201,10 @@ async function summarizeWithGemini(previousSummary, olderText) {
 
 export function toInlineVoiceCommands(claimed) {\n  return (claimed || []).map((cmd) => ({ commandId: cmd.commandId, relayNumber: cmd.relayNumber, action: cmd.action, ttlRemainingMs: cmd.ttlRemainingMs }));\n}\n\nfunction detectExplicitAction(text) {\n  const value = normalizeText(text);\n  const on = /\\b(on|chalu|start|jala do|jalao|kholo)\\b/u.test(value);\n  const off = /\\b(off|band|stop|bujha do|bujhao)\\b/u.test(value);\n  return on === off ? null : on ? "on" : "off";\n}\n\nfunction responseData(controller, values, startedAt, timingsMs) {
   timingsMs.total = Date.now() - startedAt;
-  return withNoStore(successResponse("Voice request processed", {
-    esp32DeviceId: controller.esp32DeviceId,
-    transcript: values.transcript || "",
-    execution: values.execution,
-    reason: values.reason || "",
-    reply: values.reply || "",
-    commands: values.commands || [],
-    serverMs: timingsMs.total,
-    timingsMs,
-    ...(values.details ? { details: values.details } : {}),
-  }));
+  return withNoStore(successResponse(
+    "Voice request processed",
+    makeVoiceResponseData(controller, values, timingsMs.total, timingsMs)
+  ));
 }
 
 export function parseFollowupAction(text) {
