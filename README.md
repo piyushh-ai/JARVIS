@@ -342,7 +342,7 @@ This is a prototype second factor, not speaker biometrics. Voice commands are at
 
 **Current mic capture:** INMP441, 8 kHz mono PCM16 WAV, 3-second clip, provisional RMS trigger, 30-second firmware cooldown. This is not a real wake-word/VAD system and may miss the first syllable. The existing relay pins and HTTPS/NVS/ACK flow are preserved. Amplifier/speaker playback is not included; assistant replies are printed to Serial Monitor and returned as API data.
 
-See [ESP32 Voice Control & Test Plan](docs/ESP32_VOICE.md).
+See [ESP32 Voice Control](docs/ESP32_VOICE.md) and the [Final Phase-1 Test Plan](docs/FINAL_TEST_PLAN.md).
 
 ## Available Scripts
 
