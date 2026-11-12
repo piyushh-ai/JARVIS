@@ -80,6 +80,8 @@ export function parseAndPrepareVoiceWav(buffer, codecHeader = "") {
         encoding: buffer.readUInt16LE(start),
         channels: buffer.readUInt16LE(start + 2),
         sampleRate: buffer.readUInt32LE(start + 4),
+        byteRate: buffer.readUInt32LE(start + 8),
+        blockAlign: buffer.readUInt16LE(start + 12),
         bits: buffer.readUInt16LE(start + 14),
         fmtLength: size,
       };
