@@ -12,7 +12,8 @@ The endpoint returns the transcript, assistant reply, execution metadata, and to
 - Microphone: INMP441, VDD -> 3V3, GND -> GND, BCLK -> GPIO26, WS -> GPIO25, SD -> GPIO33, L/R -> GND.
 - Existing relay mapping is preserved: IN1 -> GPIO13, IN2 -> GPIO12, IN3 -> GPIO14, IN4 -> GPIO15; active LOW.
 - I2S capture: 8 kHz mono, 32-bit I2S slot converted to PCM16 WAV, 3-second clip. This keeps the audio buffer around 48 KB instead of allocating a 96 KB 16 kHz/3-second buffer in internal DRAM.
-- A provisional RMS threshold triggers recording. It is not a true wake-word detector or robust VAD. Background noise can trigger it; the capture starts after the threshold event and may miss the first syllable.
+- Firmware keeps a 500 ms circular PCM16 pre-roll and requires three consecutive audio blocks above the provisional RMS threshold before upload. The pre-roll is prepended to the recording to reduce clipped first syllables. This is still a sustained sound gate, not wake-word recognition.
+- The provisional RMS threshold is currently 450 and requires three consecutive loud audio blocks. This value is based on the supplied Serial log and must still be calibrated in the actual room. A loud sustained noise can still trigger it; it is not a true wake-word detector or robust VAD.
 - The capture/upload is blocking for a few seconds; heartbeat and command polling pause during capture and network upload.
 - Firmware cooldown is 30 seconds. Tune `MIC_VOICE_THRESHOLD` using actual Serial RMS readings. If it false-triggers, raise it; if normal speech does not trigger, lower it gradually.
 
@@ -53,7 +54,7 @@ Body: raw WAV bytes, not JSON or multipart. Maximum request size: 384 KB.
 
 1. First test relays from the dashboard manually with mains disconnected; confirm Serial shows command received, relay channel, and ACK success.
 2. Open Arduino Serial Monitor at 115200 baud. Confirm Wi-Fi, NTP, HTTPS health, heartbeat, and microphone initialization.
-3. Speak near the INMP441 and watch RMS. Adjust the threshold only in small steps. Avoid repeated testing faster than the 30-second cooldown.
+3. Watch quiet-room and speech RMS. The current starting threshold is 450; adjust only in small steps after observing real speech. A trigger now requires three consecutive loud blocks, and the WAV includes 500 ms pre-roll. Avoid repeated testing faster than the 30-second cooldown.
 4. Confirm the firmware prints a transcript. If it prints unrelated words, improve mic placement and threshold before enabling command tests.
 5. Configure the PIN in Vercel and redeploy. Speak the exact wake phrase + PIN + a single device command.
 6. Confirm Serial shows `execution: processed`, a JARVIS reply, and a tool execution summary. Then wait for ESP32 polling and ACK; verify the dashboard reported state.
@@ -63,7 +64,7 @@ Body: raw WAV bytes, not JSON or multipart. Maximum request size: 384 KB.
 ## Troubleshooting
 
 - HTTP 401: controller ID/token mismatch or revoked token. Never paste the bearer token into logs or chat.
-- HTTP 429: wait for the cooldown/rate-limit window; do not increase request frequency.
+- HTTP 429 with `Retry after ...s`: check that the deployed voice route includes the shared-auth rate-limit fix. The voice route must call `authenticateEsp32Request(request)` with its normal shared hardware limit, not override it to 8/minute; command polling, heartbeat, and voice requests share the auth bucket. The separate voice-specific limiter remains 8 uploads/minute. Wait for the stated retry window after deploying the fix.
 - Empty or inaccurate transcript: mic channel/pin wiring, placement, RMS threshold, and clip timing need checking.
 - `voice_pin_required_or_invalid`: transcript did not contain the wake phrase and numeric PIN in the required format.
 - Assistant reply says clarification: provide the exact device name (e.g. “Main Light”).
@@ -73,3 +74,8 @@ Body: raw WAV bytes, not JSON or multipart. Maximum request size: 384 KB.
 ## Security and privacy boundary
 
 The ESP32 bearer token authenticates the controller, not the speaker. This prototype requires a spoken PIN as a second factor and attributes the action to the controller's registered Home owner. It is not speaker biometrics and it is not suitable for high-risk actuators. Raw audio is held in memory for transcription and is not saved to MongoDB or disk. The speech provider receives the audio to perform transcription.
+
+
+## Continuous microphone task
+
+Microphone I2S sampling runs in a dedicated FreeRTOS task on core 1, independent of relay polling and heartbeat requests in the main loop. Voice uploads use a separate TLS/HTTP client to avoid concurrent access to the main HTTP client.

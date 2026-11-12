@@ -44,9 +44,12 @@ Then verify:
 
 - [ ] INMP441 VDD -> 3V3, GND -> GND, BCLK -> GPIO26, WS -> GPIO25, SD -> GPIO33, L/R -> GND.
 - [ ] Confirm Serial says microphone initialized at 8 kHz.
-- [ ] Observe RMS at quiet room baseline, normal speech, and close speech.
-- [ ] Adjust `MIC_VOICE_THRESHOLD` in small increments: raise it if background noise triggers; lower it if normal speech never triggers.
+- [ ] Observe RMS at quiet room baseline, normal speech, and close speech. Current provisional firmware threshold is 450.
+- [ ] Confirm three consecutive loud I2S blocks are required; a single clap/noise spike must not upload audio.
+- [ ] Confirm the 500 ms pre-roll is included so the first syllable is less likely to be clipped.
+- [ ] Adjust `MIC_VOICE_THRESHOLD` in small increments: raise it if sustained background noise triggers; lower it if normal speech never triggers.
 - [ ] Respect the 30-second firmware upload cooldown while calibrating.
+- [ ] Confirm normal command polling and heartbeat continue returning HTTP 200 after a voice upload; voice auth must not impose an 8/minute limit on the shared ESP32 authentication bucket.
 - [ ] First validate transcript accuracy only; do not infer command execution from an STT HTTP 200.
 
 ## 4. Voice command validation
@@ -89,7 +92,8 @@ Only after low-voltage relay tests pass:
 
 ## 7. Known limits
 
-- RMS threshold is not wake-word detection or robust voice activity detection; loud noise can trigger capture and first syllables may be clipped.
+- RMS threshold plus three consecutive blocks is only a sustained-sound gate, not wake-word detection or robust voice activity detection; sustained loud noise can still trigger capture.
+- A 500 ms pre-roll is included to reduce first-syllable clipping; verify it with real speech.
 - 8 kHz mono is a memory-conscious prototype choice for ESP32-WROOM-32 without PSRAM.
 - Capture and upload block the main loop for several seconds, so heartbeat and command polling pause briefly.
 - No amplifier/speaker TTS is available in this hardware setup. Replies are visible in Serial Monitor / API response / existing dashboard.
