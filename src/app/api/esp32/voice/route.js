@@ -350,7 +350,9 @@ export async function POST(request) {
         return { ...action, device };
       }
       if (!validSceneIds.has(action.sceneId)) throw new ServiceError("Voice action scene is invalid", 400);
-      return action;
+      const sceneAction = ({ good_morning: "on", good_night: "off", away_mode: "off", all_lights_on: "on", all_lights_off: "off" })[action.sceneId];
+      if (action.action !== sceneAction) throw new ServiceError("Voice action does not match the selected scene", 400);
+      return { ...action, isScene: true };
     });
 
     const executeStarted = Date.now();
@@ -381,6 +383,7 @@ export async function POST(request) {
         executed: true,
         name: SMART_SCENES.find((scene) => scene.id === action.sceneId)?.name || action.sceneId,
         action: action.action,
+        isScene: true,
         status: result.outcome || "queued",
       };
     }));
@@ -388,7 +391,7 @@ export async function POST(request) {
     console.log("[ESP32 voice] actions executed", { ms: timingsMs.execute, count: executionResults.length });
 
     const reply = executionResults.map((result) =>
-      result.name && result.action ? makeActionReply(result.action, { name: result.name }) : `${result.name} activate kar diya.`
+      result.isScene ? `${result.name} scene activate kar diya.` : makeActionReply(result.action, { name: result.name })
     ).join(" ");
     return responseData(controller, {
       transcript, execution: "processed", reason: "command_queued",
