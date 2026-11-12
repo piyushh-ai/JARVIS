@@ -1,4 +1,4 @@
-import { WAKE_WORD_ALIASES, WAKE_WORD_SIMILARITY } from "@/services/ai/voiceConstants";
+import { WAKE_WORD_ALIASES, WAKE_WORD_SIMILARITY } from "./voiceConstants.js";
 const DEV = {"अ":"a","आ":"aa","ा":"a","ॉ":"o","ृ":"ri","ः":"","़":"","इ":"i","ई":"ee","उ":"u","ऊ":"oo","ए":"e","ऐ":"ai","ओ":"o","औ":"au","क":"k","ख":"kh","ग":"g","घ":"gh","च":"ch","छ":"chh","ज":"j","झ":"jh","ट":"t","ठ":"th","ड":"d","ढ":"dh","त":"t","थ":"th","द":"d","ध":"dh","न":"n","प":"p","फ":"ph","ब":"b","भ":"bh","म":"m","य":"y","र":"r","ल":"l","व":"v","श":"sh","ष":"sh","स":"s","ह":"h","ं":"n","ँ":"n","ि":"i","ी":"ee","ु":"u","ू":"oo","े":"e","ै":"ai","ो":"o","ौ":"au","्":""};
 const AR = {"ا":"a","آ":"aa","ع":"a","ر":"r","ز":"z","و":"v","ی":"i","ي":"i","س":"s","ج":"j","د":"d","ش":"sh","خ":"kh","ه":"h","ح":"h","ن":"n","ک":"k","ل":"l","م":"m","ب":"b","ت":"t","پ":"p","گ":"g","ں":"n","ء":""};
 export function normalizeVoiceText(value) {

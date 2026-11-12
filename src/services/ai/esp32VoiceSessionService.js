@@ -10,6 +10,15 @@ export function getVoiceIdleMinutes() {
   return Number.isFinite(value) ? Math.max(1, Math.min(MAX_IDLE_MIN, Math.floor(value))) : 15;
 }
 
+const voiceHintCache = globalThis._jarvisVoiceHintCache || (globalThis._jarvisVoiceHintCache = new Map());
+const VOICE_HINT_TTL_MS = 30000;
+export function getCachedVoiceSessionHint({ userId, homeId, controllerId, now = Date.now() }) {
+  const item = voiceHintCache.get(`${userId}:${homeId}:${controllerId}`);
+  return item && now - item.updatedAt <= VOICE_HINT_TTL_MS ? item : null;
+}
+function setVoiceSessionHint({ userId, homeId, controllerId, sessionId, lastMessageAt, pendingClarification, pinnedCount = 0 }) {
+  voiceHintCache.set(`${userId}:${homeId}:${controllerId}`, { sessionId: sessionId || null, lastMessageAt: lastMessageAt || null, pendingClarification: pendingClarification || null, pinnedCount: Math.max(0, Math.min(4, Number(pinnedCount) || 0)), updatedAt: Date.now() });
+}
 export async function loadEsp32VoiceSession({ userId, homeId, controllerId, now = new Date() }) {
   await connectDB();
   const session = await Conversation.findOne({
@@ -19,6 +28,7 @@ export async function loadEsp32VoiceSession({ userId, homeId, controllerId, now 
     return { conversation: null, context: [], summary: "", pendingClarification: null };
   }
 
+  setVoiceSessionHint({ userId, homeId, controllerId, sessionId: session._id, lastMessageAt: session.lastMessageAt, pendingClarification: session.pendingClarification, pinnedCount: session.pinnedMessages?.length || 0 });
   const messages = Array.isArray(session.messages) ? session.messages : [];
   const pinned = session.pinnedMessages?.length ? session.pinnedMessages : messages.slice(0, 4);
   const recent = messages.slice(-24);
@@ -80,6 +90,7 @@ export async function persistEsp32VoiceTurn({
       { _id: sessionId, userId, homeId },
       update
     );
+    setVoiceSessionHint({ userId, homeId, controllerId, sessionId, lastMessageAt: assistantMessage.createdAt, pendingClarification, pinnedCount: Math.min(4, pinnedCount + 2) });
     return sessionId;
   }
 
@@ -93,6 +104,7 @@ export async function persistEsp32VoiceTurn({
     messageCount: 2, summary: "", summaryThroughMessageCount: 0,
     pendingClarification: pendingClarification || null,
   });
+  setVoiceSessionHint({ userId, homeId, controllerId, sessionId: created._id, lastMessageAt: assistantMessage.createdAt, pendingClarification, pinnedCount: 2 });
   return created._id;
 }
 
