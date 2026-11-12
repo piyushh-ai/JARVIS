@@ -46,6 +46,20 @@ Maximum request size: 384 KB. For the first ESP32 test, use a short 2–4 second
 }
 ```
 
+## ESP32 firmware capture test
+
+The companion sketch at `aurduino/sketch_nov11a/sketch_nov11a.ino` now includes a first-pass sound-triggered capture/upload path:
+
+- INMP441 is sampled at 16 kHz, mono.
+- When the measured RMS reaches the provisional `MIC_VOICE_THRESHOLD` (default 180), the firmware records a 3-second clip.
+- Samples are converted to 16-bit PCM and wrapped in a WAV header.
+- WAV bytes are sent directly to this endpoint with the existing device ID and NVS bearer token.
+- The transcript is printed to Serial Monitor. A 10-second cooldown limits repeated uploads.
+
+This is a prototype sound-level trigger, **not a wake-word detector or speech VAD**. Loud noise can trigger a recording, and a quiet/soft voice may not. Tune the threshold from actual Serial RMS readings. Audio capture/upload temporarily blocks the main loop, so heartbeat and command polling pause during the short recording and request.
+
+Before uploading this sketch, replace the Wi-Fi placeholders locally with your own credentials. Do not commit Wi-Fi passwords or device tokens.
+
 ## Security boundary — important
 
 This is deliberately a **transcription-only** milestone. An ESP32 bearer token proves that the registered controller sent the request; it does not prove who spoke near the microphone. The endpoint therefore does not call `runAssistantTurn`, execute tools, enqueue relay commands, or claim the speaker is the Home owner.
