@@ -5,6 +5,7 @@ import { connectDB } from "../lib/db/connect.js";
 import AutomationRule from "../models/AutomationRule.js";
 import Command from "../models/Command.js";
 import Controller from "../models/Controller.js";
+import Conversation from "../models/Conversation.js";
 import Device from "../models/Device.js";
 import Home from "../models/Home.js";
 import Room from "../models/Room.js";
@@ -201,6 +202,7 @@ async function run() {
     Command.syncIndexes(),
     Controller.syncIndexes(),
     AutomationRule.syncIndexes(),
+    Conversation.syncIndexes(),
   ]);
 
   console.log(

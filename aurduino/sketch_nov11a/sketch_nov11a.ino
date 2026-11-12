@@ -22,6 +22,7 @@
     - Boot status synchronization
     - WiFi reconnect
     - NTP synchronization
+    - INMP441 I2S microphone capture + Serial RMS level monitor
 
   SAFETY:
     Keep 220V mains disconnected during testing.
@@ -34,6 +35,8 @@
 #include <Preferences.h>
 #include <ArduinoJson.h>
 #include <time.h>
+#include <math.h>
+#include "driver/i2s.h"
 
 // ============================================================
 // 1. WIFI CONFIGURATION
@@ -72,6 +75,32 @@ constexpr uint8_t RELAY_OFF = HIGH;
 bool relayStates[RELAY_COUNT] = {
   false, false, false, false
 };
+
+// ============================================================
+// 3A. INMP441 MICROPHONE CONFIGURATION
+// ============================================================
+// INMP441 wiring:
+// VDD -> 3V3, GND -> GND
+// SCK/BCLK -> GPIO26, WS/LRCLK -> GPIO25
+// SD/DOUT -> GPIO33, L/R -> GND (LEFT channel)
+//
+// This firmware captures mic audio locally and reports a level
+// to Serial Monitor. It does NOT upload audio to the server yet;
+// the server-side audio/STT endpoint is not implemented.
+constexpr i2s_port_t MIC_I2S_PORT = I2S_NUM_0;
+constexpr int MIC_BCLK_PIN = 26;
+constexpr int MIC_WS_PIN = 25;
+constexpr int MIC_DATA_PIN = 33;
+constexpr uint32_t MIC_SAMPLE_RATE = 16000;
+constexpr size_t MIC_BUFFER_SAMPLES = 256;
+constexpr uint32_t MIC_REPORT_INTERVAL_MS = 500;
+constexpr uint32_t MIC_VOICE_THRESHOLD = 180; // Tune after observing Serial output
+
+int32_t micRawBuffer[MIC_BUFFER_SAMPLES];
+bool micReady = false;
+unsigned long lastMicReportMs = 0;
+uint32_t micLastLevel = 0;
+
 
 // ============================================================
 // 4. TIMING CONFIGURATION
@@ -172,6 +201,10 @@ bP6MvPJwNQzcmRk13NfIRmPVNnGuV/u3gm3c
 // 9. FUNCTION DECLARATIONS
 // ============================================================
 
+bool initializeMicrophone();
+
+void processMicrophone();
+
 bool loadDeviceToken();
 
 void initializeRelays();
@@ -225,6 +258,83 @@ void rememberProcessedCommand(
   const String& commandId,
   const String& state
 );
+
+// ============================================================
+// 9A. INMP441 MICROPHONE INITIALIZATION & CAPTURE
+// ============================================================
+
+bool initializeMicrophone() {
+  i2s_config_t config = {};
+  config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX);
+  config.sample_rate = MIC_SAMPLE_RATE;
+  config.bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT;
+  config.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
+  config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
+  config.intr_alloc_flags = 0;
+  config.dma_buf_count = 8;
+  config.dma_buf_len = MIC_BUFFER_SAMPLES;
+  config.use_apll = false;
+  config.tx_desc_auto_clear = false;
+  config.fixed_mclk = 0;
+
+  i2s_pin_config_t pins = {};
+  pins.bck_io_num = MIC_BCLK_PIN;
+  pins.ws_io_num = MIC_WS_PIN;
+  pins.data_out_num = I2S_PIN_NO_CHANGE;
+  pins.data_in_num = MIC_DATA_PIN;
+
+  esp_err_t result = i2s_driver_install(MIC_I2S_PORT, &config, 0, nullptr);
+  if (result != ESP_OK && result != ESP_ERR_INVALID_STATE) {
+    Serial.printf("[MIC] I2S driver install failed: %d\n", result);
+    return false;
+  }
+
+  result = i2s_set_pin(MIC_I2S_PORT, &pins);
+  if (result != ESP_OK) {
+    Serial.printf("[MIC] I2S pin setup failed: %d\n", result);
+    return false;
+  }
+
+  i2s_zero_dma_buffer(MIC_I2S_PORT);
+  Serial.println("[MIC] INMP441 initialized (16kHz, 32-bit, LEFT)");
+  return true;
+}
+
+void processMicrophone() {
+  if (!micReady) return;
+
+  size_t bytesRead = 0;
+  esp_err_t result = i2s_read(
+    MIC_I2S_PORT,
+    micRawBuffer,
+    sizeof(micRawBuffer),
+    &bytesRead,
+    0
+  );
+
+  if (result != ESP_OK || bytesRead < sizeof(int32_t)) return;
+
+  const size_t samplesRead = bytesRead / sizeof(int32_t);
+  uint64_t sumSquares = 0;
+
+  for (size_t i = 0; i < samplesRead; i++) {
+    // INMP441 24-bit audio is carried in a 32-bit I2S slot.
+    int32_t sample = micRawBuffer[i] >> 14;
+    int64_t value = sample;
+    sumSquares += (uint64_t)(value * value);
+  }
+
+  uint32_t rms = (uint32_t)sqrt((double)sumSquares / samplesRead);
+  micLastLevel = rms;
+
+  if (millis() - lastMicReportMs >= MIC_REPORT_INTERVAL_MS) {
+    lastMicReportMs = millis();
+    Serial.print("[MIC] RMS level: ");
+    Serial.print(rms);
+    Serial.print(" | ");
+    Serial.println(rms >= MIC_VOICE_THRESHOLD ? "VOICE/LOUD SOUND" : "quiet");
+  }
+}
 
 // ============================================================
 // 10. RELAY INITIALIZATION
@@ -1058,6 +1168,12 @@ void setup() {
 
   initializeRelays();
 
+  // Initialize INMP441 without changing relay/network setup.
+  micReady = initializeMicrophone();
+  if (!micReady) {
+    Serial.println("[MIC] Microphone unavailable; relay controller will continue.");
+  }
+
   // Validate Wi-Fi credentials.
 
   if (
@@ -1120,6 +1236,9 @@ void setup() {
 // ============================================================
 
 void loop() {
+
+  // Keep sampling the INMP441 even if Wi-Fi/server is offline.
+  processMicrophone();
 
   // ----------------------------------------------------------
   // WIFI

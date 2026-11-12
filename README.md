@@ -10,6 +10,11 @@ jarvis/
 ├── src/
 │   ├── app/
 │   │   ├── api/
+│   │   │   ├── assistant/
+│   │   │   │   ├── chat/route.js
+│   │   │   │   └── conversations/
+│   │   │   │       ├── route.js
+│   │   │   │       └── [id]/route.js
 │   │   │   ├── auth/
 │   │   │   │   ├── login/route.js
 │   │   │   │   ├── logout/route.js
@@ -54,6 +59,8 @@ jarvis/
 │   │   │   └── [id]/
 │   │   │       ├── route.js
 │   │   │       └── toggle/route.js
+│   │   ├── assistant/
+│   │   │   └── page.js
 │   │   ├── login/page.js
 │   │   ├── register/page.js
 │   │   ├── globals.css
@@ -80,13 +87,15 @@ jarvis/
 │   │   ├── scenes/
 │   │   │   └── SmartScenesSection.jsx
 │   │   ├── assistant/
+│   │   │   └── AssistantClient.jsx
 │   │   └── automation/
 │   ├── hooks/
 │   │   ├── useAuth.js
 │   │   ├── useCollectionResource.js
 │   │   ├── useControllers.js
 │   │   ├── useDevices.js
-│   │   └── useRooms.js
+│   │   ├── useRooms.js
+│   │   └── useVoiceAssistant.js
 │   ├── lib/
 │   │   ├── api/
 │   │   │   └── client.js
@@ -110,6 +119,7 @@ jarvis/
 │   │   ├── AutomationRule.js
 │   │   ├── Command.js
 │   │   ├── Controller.js
+│   │   ├── Conversation.js
 │   │   ├── Home.js
 │   │   ├── RateLimit.js
 │   │   ├── Session.js
@@ -123,9 +133,12 @@ jarvis/
 │   │   │   ├── assistantService.js
 │   │   │   ├── deviceTools.js
 │   │   │   ├── homeContextService.js
-│   │   │   └── roomTools.js
+│   │   │   ├── llmProvider.js
+│   │   │   ├── roomTools.js
+│   │   │   └── sceneTools.js
 │   │   ├── automation/
 │   │   │   └── automationService.js
+│   │   ├── assistantApi.js
 │   │   ├── authApi.js
 │   │   ├── authService.js
 │   │   ├── commandService.js
@@ -160,7 +173,7 @@ JARVIS uses a **futuristic, mobile-first HUD visual direction** inspired by Iron
 
 The primary route (`/`) delivers a mobile-first smart room HUD connected to the live MongoDB Atlas backend:
 
-- **UI Design Highlights:** Compact sticky header showing real backend sync status (`API Ready` / `Syncing` / `Offline`), manual dashboard refresh button, interactive Account & Home switcher dropdown (with inline Create Home), and Logout button; circular concentric AI Core hero centerpiece (`SYSTEM STANDBY`, room/device summary pills); MongoDB-backed `RoomOverview` Dashboard Overview; room & device management grids; and a safe-area-aware fixed bottom navigation bar (`Home` active; `Assistant`, `Automation`, and `Settings` disabled placeholders). Dedicated `/login` and `/register` HUD views match the theme and GSAP animations.
+- **UI Design Highlights:** Compact sticky header showing real backend sync status (`API Ready` / `Syncing` / `Offline`), manual dashboard refresh button, interactive Account & Home switcher dropdown (with inline Create Home), and Logout button; circular concentric AI Core hero centerpiece (`SYSTEM STANDBY`, room/device summary pills); MongoDB-backed `RoomOverview` Dashboard Overview; room & device management grids; and a safe-area-aware fixed bottom navigation bar (`Home` & `Assistant` active; `Automation` and `Settings` disabled placeholders). Dedicated `/assistant`, `/login`, and `/register` HUD views match the theme and GSAP animations.
 - **Dashboard Metrics & Live Data Sources:** Server Component `src/app/page.js` verifies session auth inside `<Suspense>` and seeds `DashboardClient`, where `useAuth()`, `useRooms({ homeId })`, and `useDevices({ homeId })` scope data cleanly to the active authorized `Home`. Derives exact MongoDB counts (`Total Rooms`, `Devices`, `Desired ON`, `Connection Status` broken down into `HW Online` / `Offline` / `Unknown`, `Reported State` breakdown, `Device Types Summary` across `light`/`fan`/`led`/`other`, and rooms grouped with assigned devices including `0 Devices` rooms), provides room-to-device navigation links (`#rooms-section`, `#devices-section`), and renders loading, error+retry, empty, and manual-refresh states.
 - **GSAP Animation Features:** Multi-speed concentric AI Core ring rotation (with stationary central `JARVIS` branding), soft core glow pulse, lightweight radial scanning sweep, coordinated landmark entrance, post-load device card stagger, and tactile desktop hover / mobile press / toggle state micro-interactions—all wrapped in `gsap.context()` with `prefers-reduced-motion` support.
 - **Responsive Design Support:** Mobile-first layout tuned across small phones (`360px`, `390px`, `430px`), tablets (`768px`), and desktop (`1440px`) without horizontal overflow, transitioning from a single-column mobile stack into a balanced 2-column desktop HUD grid with a centered floating bottom dock.
@@ -168,7 +181,8 @@ The primary route (`/`) delivers a mobile-first smart room HUD connected to the 
 - **MongoDB-Backed Device Management & Optimistic Command Wiring:** Lists persisted devices in the active Home (`name`, `type`, room name, `connectionStatus`, `desiredState`, `reportedState`, mapped ESP32 controller ID + relay `#` or unmapped indicator), prevents duplicate relay or cross-Home controller mapping in `DeviceFormModal`, and connects device ON/OFF toggles directly to `POST /api/devices/[id]/toggle` via `useDevices().toggleDevice()`. Toggling updates UI `desiredState` optimistically (`< 16 ms` perceived response) with per-device toggle queuing, rollback on error, explicit **Pending HW ACK** / **HW Synced** / **Cmd Failed** badges, and visibility-aware adaptive background reconciliation polling (`2s` -> `5s`, `0` idle polling when synced). Backend validates an active mapped ESP32 controller & relay, supersedes stale pending commands safely with total ordering, enforces `idempotencyKey` deduplication, updates `desiredState`, queues a `pending` `Command`, and leaves `reportedState` strictly hardware-ACK-driven.
 - **ESP32 Controller Provisioning UI (`ControllerManagementSection`, `ControllerProvisionModal`):** Displays Home-scoped controllers with online/offline/awaiting-heartbeat/revoked status, `tokenPrefix`, `lastSeen`, `firmwareVersion`, Relay Channel 1 config (bench-verified reference `GPIO 13`, Active `LOW`, `safeBootState: "off"`), dual 4-channel expansion readiness (`Module A CH 1-4`, `Module B CH 5-8` unverified beyond CH 1), and mapped devices. Authorized Home owners/admins can provision controllers, view/copy the generated bearer token ONCE inside an ephemeral reveal modal, update config (`PATCH /api/esp32/controllers/[id]`), rotate tokens, or revoke compromised boards.
 - **Smart Scenes (`SmartScenesSection`, `sceneService.js`, `/api/scenes/[sceneId]/execute`):** Provides one-tap HUD scene presets (**Good Morning**: Main Light ON & Mandir Light ON; **Good Night** / **Away Mode**: all devices OFF; **All Lights ON / OFF**: strictly filters `type === "light"` devices). Dynamically resolves devices from MongoDB scoped by authorized `Home`, dispatches all commands through `toggleDeviceById` (`Command` queue without modifying `reportedState`), handles HTTP `207` partial failures and `422` full failures cleanly, prevents duplicate execution via `idempotencyKey` replay + distributed `2500 ms` `RateLimit` cooldown (`409` on rapid re-triggers) + UI in-flight/cooldown locks, and feeds results into `useDevices().applySceneOutcome` for automatic ESP32 ACK reconciliation.
-- **Current QA & Performance Status:** ESLint (`npm run lint`), production build (`npm run build`), `.next/static` bundle secret scan, HTTP security headers (`next.config.mjs`), `16 KB` payload limits (`413`), Home `owner`/`admin`/`member` RBAC + diagnostics (`GET /api/diagnostics`), ESR-indexed Command polling (`69.7 ms` p50 empty poll, `72.3 ms` p50 claim vs ~1200–1300 ms pre-audit baseline) and optimistic ACK (`106.3 ms` p50 vs ~1500–1700 ms baseline), Smart Scenes E2E suite (auth/cross-home isolation, dynamic target matching across 4+ relays, duplicate `409`/idempotency `200`, HTTP `207` partial failures, ESP32 ACK lifecycle), AI/Automation permissioned service seams (`src/services/ai/*`, `src/services/automation/*`), and full E2E hardware command lifecycle pass against `next start` + MongoDB Atlas. Remaining tasks: bench-verify channels 2–8, flash `ESP32-WROOM-32` firmware, live Chrome browser QA, and wire real LLM/Cron integrations.
+- **JARVIS AI Assistant (`/assistant`, `AssistantClient.jsx`, `useVoiceAssistant.js`):** Authenticated conversational interface supporting concise English and Hinglish text + browser-native voice commands (`Web Speech API SpeechRecognition` with `en-IN`, live interim preview, and clear `speechSynthesis` voice replies with neural-preferred English/Indian-English voice ranking, overlap cancellation, and Mute/Stop controls). Uses a modular server-side LLM adapter (`Gemini` -> automatic `Mistral` / `Groq` / `OpenAI` failover) with function/tool calling routed strictly through `toggleDeviceById` and `executeScene`, persistent per-`(userId, homeId)` `Conversation` history in MongoDB Atlas, ambiguity clarification prompts, and explicit `desiredState` queued vs. hardware ACK honesty.
+- **Current QA & Performance Status:** ESLint (`npm run lint`), production build (`npm run build`), `.next/static` bundle secret scan, HTTP security headers (`next.config.mjs`), `16 KB` payload limits (`413`), Home `owner`/`admin`/`member` RBAC + diagnostics (`GET /api/diagnostics`), ESR-indexed Command polling (`69.7 ms` p50 empty poll, `72.3 ms` p50 claim vs ~1200–1300 ms pre-audit baseline) and optimistic ACK (`106.3 ms` p50 vs ~1500–1700 ms baseline), Smart Scenes E2E suite, AI Assistant E2E test suite (unauth `401`, `/assistant` redirect, per-user & cross-Home `403`, invalid tool/arg guards, unknown & ambiguous device handling, multi-turn tool calling & scene execution, ESP32 ACK lifecycle, `503`/`502`/`504` provider errors, `429` rate limit, bundle secret scan), and full E2E hardware command lifecycle pass against `next start` + MongoDB Atlas. Remaining tasks: bench-verify channels 2–8, configure production LLM key (`GEMINI_API_KEY` / `GROQ_API_KEY` / `OPENAI_API_KEY`), live Chrome UI/voice browser QA, and build Automation/Settings UIs.
 
 ## Screenshots
 
@@ -189,6 +203,7 @@ JARVIS uses **Next.js App Router Route Handlers** (`src/app/api/`) instead of a 
   - `Command` — Persistent hardware command queue (`commandId` UUID, `deviceId`, `esp32DeviceId`, `homeId`, `ownerId`, `relayNumber`, `action` `on`/`off`, `status` `pending | processing | success | failed | expired`, `attemptCount`/`maxAttempts`, `processingStartedAt`/`processingUntil` lease, `expiresAt`, `retainUntil` 30-day TTL cleanup, `executedAt`, `result`, `errorReason`, partial unique `idempotencyKey`, timestamps).
   - `Controller` — Physical ESP32 controller identity (`esp32DeviceId`, optional `homeId` & `ownerId`, peppered SHA-256 `tokenHash` + `previousTokenHash` with `select: false`, `tokenPrefix`, `tokenVersion`, `status` `provisioning | active | revoked`, `relayConfig`, `firmwareVersion`, `lastRssi`, `lastBootReason`, `freeHeapBytes`, `uptimeSeconds`, `lastSeen`, timestamps).
   - `AutomationRule` — Foundation schema for future external cron/sensor rules (`homeId`, `ownerId`, `name`, `enabled`, `triggerType`, `scheduleCron`, `offsetMinutes`, `timezone`, `manualOverrideUntil`, `actions`, `nextRunAt`, `lastTriggeredAt`, bounded `recentExecutions`, timestamps).
+  - `Conversation` — Per-`(userId, homeId)` isolated AI assistant memory (`userId`, `homeId`, `title`, `messages` with `role`, `content`, `inputMode`, and bounded `toolExecutions` metadata, `messageCount`, `lastMessageAt`, timestamps).
 - **Implemented now:** HTTP-only DB session authentication (`scrypt` + `timingSafeEqual`), multi-home role authorization (`owner` / `admin` / `member`), CSRF same-origin enforcement on state-changing routes, MongoDB distributed rate limiting, `GET /api/health`, `/api/auth/*`, `/api/homes*`, scoped `/api/rooms*` + `/api/devices*` + `/api/commands*`, Home owner/admin ESP32 controller provisioning UI (`ControllerManagementSection`, one-time token reveal), dashboard toggle-to-command queue wiring (`POST /api/devices/[id]/toggle`), and machine-authenticated ESP32 Hardware APIs (`/api/esp32/{heartbeat,commands/*,status}`).
 - **Pending Future Work:** Bench GPIO/polarity verification on physical relay modules, `ESP32-WROOM-32` Arduino/ESP-IDF C++ firmware, and hardware-in-the-loop QA. See [Architecture](docs/ARCHITECTURE.md).
 - **Auth & Home APIs (`/api/auth/*`, `/api/homes*`):**
@@ -302,7 +317,21 @@ A reusable client API layer connects future UI views to the Next.js Route Handle
    curl -b cookies.txt "http://localhost:3000/api/devices?roomId=<ROOM_ID>&type=light"
    ```
 
-   **Verified endpoints:** `GET /api/health`, `/api/auth/*`, `/api/homes*`, `/api/rooms*`, `/api/devices*`, `/api/scenes*`, `/api/commands*`, `/api/diagnostics`, and `/api/esp32/*` are verified against MongoDB Atlas for authentication, cross-home IDOR isolation (`403`), role enforcement, validation (`400`), missing records (`404`), conflicts (`409`), partial scenes (`207`), and distributed rate limiting (`429`).
+   **Verified endpoints:** `GET /api/health`, `/api/auth/*`, `/api/homes*`, `/api/rooms*`, `/api/devices*`, `/api/scenes*`, `/api/assistant/*`, `/api/commands*`, `/api/diagnostics`, and `/api/esp32/*` are verified against MongoDB Atlas for authentication, cross-home IDOR isolation (`403`), role enforcement, validation (`400`), missing records (`404`), conflicts (`409`), partial scenes (`207`), and distributed rate limiting (`429`).
+
+## AI Assistant & Voice Commands Setup
+
+1. **Server LLM Configuration:** Set at least one server-only API key in `.env.local` (and Vercel Project Settings) — **never** prefix with `NEXT_PUBLIC_`:
+   - `GEMINI_API_KEY` *(primary default model: `gemini-3.1-flash-lite`, with automatic fallback across `gemini-3.1-flash-lite` -> `gemini-3-flash-preview`)*
+   - `MISTRAL_API_KEY` *(backup/primary default model: `mistral-small-latest`; if both Gemini and Mistral keys exist, failed/timed-out Gemini calls automatically fail over to Mistral)*
+   - or `GROQ_API_KEY` *(default model: `llama-3.3-70b-versatile`)* / `OPENAI_API_KEY` *(default model: `gpt-4o-mini`)*
+   - Optional overrides: `AI_PROVIDER` (`gemini | mistral | groq | openai`), `AI_MODEL`, `AI_TIMEOUT_MS` (`5000–45000`, default `20000`).
+2. **Text & Voice Usage (`/assistant`):**
+   - Open `/assistant` from the bottom dock (or navigate directly after signing in).
+   - Type English or Hinglish commands (e.g., *"Jarvis, main light on kar do"*, *"Bedroom ki saari lights on kar do"*, *"Good night scene activate kar do"*, *"Mere ghar mein kaun-kaun se devices online hain?"*), or tap the **Microphone** button to dictate via `Web Speech API` (`en-IN`) and hear spoken replies via `speechSynthesis` (toggleable ON/OFF or stopped anytime).
+3. **Known Limitations:**
+   - **LLM Provider Requirement:** Without a configured API key on the server, `/api/assistant/chat` fails closed with HTTP `503` (never returns fabricated responses).
+   - **Browser Speech API Support:** Microphone STT (`SpeechRecognition` / `webkitSpeechRecognition`) works on Chromium-based browsers (Chrome/Edge) and requires microphone permission + HTTPS (or localhost); Firefox and some embedded WebViews disable the microphone button cleanly with guidance. Spoken `speechSynthesis` voice availability depends on OS/browser installed voices.
 
 ## Available Scripts
 
@@ -321,6 +350,7 @@ JARVIS builds cleanly for Vercel's Node.js Serverless runtime without local disk
    - `MONGODB_URI` *(Required, server-only)* — Your MongoDB Atlas connection string. **Never** prefix with `NEXT_PUBLIC_`.
    - `SESSION_SECRET` *(Recommended, server-only)* — HMAC pepper for hashing `jarvis_session` cookies in MongoDB.
    - `ESP32_TOKEN_PEPPER` *(Recommended, server-only)* — HMAC pepper for hashing per-device ESP32 Bearer tokens.
+   - `GEMINI_API_KEY` / `GROQ_API_KEY` / `OPENAI_API_KEY` *(Required for live AI Assistant, server-only)* — LLM provider key (optional `AI_PROVIDER`, `AI_MODEL`, `AI_TIMEOUT_MS`).
    - `NEXT_PUBLIC_API_BASE_URL` *(Optional)* — Leave unset so client requests use same-origin `/api` (`src/lib/api/client.js`).
 4. **Deploy & Verify:**
    - Trigger **Deploy** and inspect build logs.
