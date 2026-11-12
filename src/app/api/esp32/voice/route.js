@@ -266,7 +266,16 @@ export async function POST(request) {
     const transcript = String(parsed.transcript || "").trim().slice(0, 1500);
     const quickAction = pending && Date.now() - new Date(pending.createdAt || 0).getTime() <= 30000
       ? parseFollowupAction(transcript) : null;
-    const clarificationFollowup = Boolean(quickAction && (pending.deviceId || pending.sceneId));\n    const explicitAction = detectExplicitAction(transcript);\n    const explicitOnAndOff = hasConflictingExplicitActions(transcript);\n    if (explicitOnAndOff) {\n      parsed.actionConfidence = "low";\n      parsed.clarification = "On karun ya off?";\n      parsed.actions = [];\n    } else if (explicitAction && parsed.actions?.length) {\n      parsed.actions = parsed.actions.map((item) => ({ ...item, action: explicitAction }));\n    }
+    const clarificationFollowup = Boolean(quickAction && (pending.deviceId || pending.sceneId));
+    const explicitAction = detectExplicitAction(transcript);
+    const explicitOnAndOff = hasConflictingExplicitActions(transcript);
+    if (explicitOnAndOff) {
+      parsed.actionConfidence = "low";
+      parsed.clarification = "On karun ya off?";
+      parsed.actions = [];
+    } else if (explicitAction && parsed.actions?.length) {
+      parsed.actions = parsed.actions.map((item) => ({ ...item, action: explicitAction }));
+    }
     if (clarificationFollowup) {
       parsed = {
         ...parsed, kind: "command", actionConfidence: "high", clarification: null,
@@ -339,7 +348,8 @@ export async function POST(request) {
 
     const executeStarted = Date.now();
     const executionResults = await Promise.all(validated.map(async (action) => {
-      const controllerKey = crypto.createHash("sha256").update(controller.esp32DeviceId).digest("hex").slice(0, 16);\n      const idempotencyKey = `voice:${controllerKey}:${crypto.randomUUID()}`;
+      const controllerKey = crypto.createHash("sha256").update(controller.esp32DeviceId).digest("hex").slice(0, 16);
+      const idempotencyKey = `voice:${controllerKey}:${crypto.randomUUID()}`;
       if (action.device) {
         const { toggleDeviceById } = await import("@/services/deviceService");
         const result = await toggleDeviceById(action.device.id, {
@@ -388,6 +398,7 @@ export async function POST(request) {
     }, startedAt, timingsMs);
   } catch (error) {
     console.error("[ESP32 voice] request failed", { totalMs: Date.now() - startedAt, status: error?.statusCode || 500, message: error?.message });
-    const apiError = error?.name === "VoiceAudioError" ? new ServiceError(error.message, error.statusCode || 400) : error;\n    return withNoStore(handleApiError(apiError));
+    const apiError = error?.name === "VoiceAudioError" ? new ServiceError(error.message, error.statusCode || 400) : error;
+    return withNoStore(handleApiError(apiError));
   }
 }
