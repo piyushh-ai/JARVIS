@@ -84,9 +84,8 @@ bool relayStates[RELAY_COUNT] = {
 // SCK/BCLK -> GPIO26, WS/LRCLK -> GPIO25
 // SD/DOUT -> GPIO33, L/R -> GND (LEFT channel)
 //
-// This firmware captures short PCM audio and uploads WAV to
-// POST /api/esp32/voice. The endpoint returns a transcript only;
-// it does not execute assistant tools or relay commands.
+// This firmware captures 8 kHz mono PCM16 WAV and uploads it to
+// POST /api/esp32/voice. Assistant execution requires a spoken PIN.
 constexpr i2s_port_t MIC_I2S_PORT = I2S_NUM_0;
 constexpr int MIC_BCLK_PIN = 26;
 constexpr int MIC_WS_PIN = 25;
