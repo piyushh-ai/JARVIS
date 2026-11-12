@@ -21,7 +21,7 @@ export async function loadEsp32VoiceSession({ userId, homeId, controllerId, now 
 
   const messages = Array.isArray(session.messages) ? session.messages : [];
   const pinned = session.pinnedMessages?.length ? session.pinnedMessages : messages.slice(0, 4);
-  const recent = messages.slice(-12);
+  const recent = messages.slice(-24);
   const pinnedKeys = new Set(pinned.map((m) =>
     `${m.role}:${new Date(m.createdAt).getTime()}:${m.content}`
   ));
@@ -108,7 +108,7 @@ export async function refreshEsp32VoiceSummary({ sessionId, userId, homeId, cont
   const messages = session.messages || [];
   const storedStart = Math.max(0, session.messageCount - messages.length);
   const startAbsolute = Math.max(4, session.summaryThroughMessageCount || 0, storedStart);
-  const endAbsolute = Math.max(startAbsolute, session.messageCount - 12);
+  const endAbsolute = Math.max(startAbsolute, session.messageCount - 24);
   const older = messages.slice(startAbsolute - storedStart, endAbsolute - storedStart);
   if (older.length < 8) return;
 
