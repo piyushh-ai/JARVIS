@@ -78,6 +78,7 @@ const conversationSchema = new mongoose.Schema(
       required: [true, "Home reference is required"],
     },
     source: { type: String, enum: ["assistant-web", "esp32-voice"], default: "assistant-web", index: true },
+    topics: { type: [String], default: [] },
     controllerId: { type: String, default: null, trim: true, maxlength: 100 },
     sessionStartedAt: { type: Date, default: null },
     summary: { type: String, default: "", maxlength: 5000 },
@@ -115,6 +116,7 @@ const conversationSchema = new mongoose.Schema(
 );
 
 conversationSchema.index({ userId: 1, homeId: 1, lastMessageAt: -1 });
+conversationSchema.index({ title: "text", summary: "text", firstUserMessage: "text", "messages.content": "text" });
 conversationSchema.index({ userId: 1, homeId: 1, source: 1, lastMessageAt: -1 });
 conversationSchema.index({ userId: 1, homeId: 1, source: 1, controllerId: 1, lastMessageAt: -1 });
 conversationSchema.index({ _id: 1, userId: 1, homeId: 1 });

@@ -9,6 +9,7 @@ const deviceSchema = new mongoose.Schema(
       minlength: [1, "Device name cannot be empty"],
       maxlength: [80, "Device name cannot exceed 80 characters"],
     },
+    aliases: { type: [String], default: [], validate: (items) => items.length <= 20 },
     type: {
       type: String,
       enum: {

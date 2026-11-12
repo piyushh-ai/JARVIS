@@ -1,0 +1,2 @@
+export const WAKE_WORD_ALIASES = Object.freeze(["jarvis","jarvish","jarvik","jarvid","jarvin","garvin","garvis","jarvas","jaarvis","jervis","darvish","darvis","service","hey jarvis","hi jarvis","ok jarvis","okay jarvis","जार्विस","जारविस","जार्वेश","जारवेश","جار ریز","جارویس"]);
+export const WAKE_WORD_SIMILARITY = Math.max(0.5, Math.min(0.9, Number(process.env.ESP32_WAKE_WORD_SIMILARITY || 0.6) || 0.6));

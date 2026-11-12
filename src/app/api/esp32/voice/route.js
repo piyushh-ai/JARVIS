@@ -13,15 +13,14 @@ import { parseAndPrepareVoiceWav } from "@/services/ai/esp32VoiceAudio";
 import { getCachedVoiceCatalog, setCachedVoiceCatalog } from "@/services/ai/esp32VoiceCache";
 import { loadEsp32VoiceSession, persistEsp32VoiceTurn, refreshEsp32VoiceSummary } from "@/services/ai/esp32VoiceSessionService";
 import { claimPendingCommands } from "@/services/commandService";
-import { normalizeVoiceText as normalizeText, findWakeWord, detectExplicitAction, hasConflictingExplicitActions, resolveClarificationFollowup, toInlineVoiceCommands, makeVoiceResponseData } from "@/services/ai/esp32VoiceLogic";
+import { normalizeVoiceText as normalizeText, findWakeWord, detectExplicitAction, hasConflictingExplicitActions, parseDeterministicVoiceCommand, resolveClarificationFollowup, toInlineVoiceCommands, makeVoiceResponseData } from "@/services/ai/esp32VoiceLogic";
 
 export const maxDuration = 30;
 // Keep this aligned with the MongoDB Atlas cluster's region.
 export const preferredRegion = "bom1";
 
 const MAX_AUDIO_BYTES = 256 * 1024;
-const GROQ_TIMEOUT_MS = 18000;
-const WAKE_WORD_ALIASES = ["jarvis", "jarvish", "jarwis", "jarvas", "javis", "jarviss", "जार्विस"];
+const GROQ_TIMEOUT_MS = 24000;
 const SCENE_ACTION = {
   good_morning: "on",
   good_night: "off",
@@ -60,13 +59,13 @@ async function loadCatalog(homeId) {
   await connectDB();
   const [rooms, devices] = await Promise.all([
     Room.find({ homeId }).select("_id name").lean(),
-    Device.find({ homeId }).select("_id name type roomId relayNumber desiredState reportedState connectionStatus esp32DeviceId").lean(),
+    Device.find({ homeId }).select("_id name type aliases roomId relayNumber desiredState reportedState connectionStatus esp32DeviceId").lean(),
   ]);
   const roomMap = new Map(rooms.map((r) => [String(r._id), r.name]));
   return setCachedVoiceCatalog(homeId, {
     rooms: rooms.map((r) => ({ id: String(r._id), name: r.name })),
     devices: devices.map((d) => ({
-      id: String(d._id), name: d.name, type: d.type,
+      id: String(d._id), name: d.name, type: d.type, aliases: Array.isArray(d.aliases) ? d.aliases : [],
       roomId: String(d.roomId), roomName: roomMap.get(String(d.roomId)) || "Unassigned",
       relayNumber: d.relayNumber ?? null, desiredState: d.desiredState,
       reportedState: d.reportedState, connectionStatus: d.connectionStatus,
@@ -100,147 +99,61 @@ function buildPrompt(catalog, session) {
 
 
 
-async function callGroq({ audio, catalog, session, deadline }) {
-  const apiKey = process.env.GROQ_API_KEY?.trim();
-  if (!apiKey) throw new ServiceError("GROQ_API_KEY is not configured", 503);
-
-  let transcription;
-  try {
-    const form = new FormData();
-    form.append("file", new Blob([audio], { type: "audio/wav" }), "jarvis-voice.wav");
-    form.append("model", process.env.GROQ_VOICE_STT_MODEL?.trim() || "whisper-large-v3-turbo");
-    form.append("response_format", "json");
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new Error("Voice analysis timed out");
-    const response = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
-      method: "POST",
-      headers: { authorization: `Bearer ${apiKey}` },
-      body: form,
-      signal: AbortSignal.timeout(remaining),
-    });
-    const bodyText = await response.text();
-    let payload;
-    try { payload = JSON.parse(bodyText); }
-    catch {
-      const error = new Error("Groq transcription returned invalid JSON");
-      error.status = response.status;
-      throw error;
-    }
-    if (!response.ok) {
-      const error = new Error(`Groq transcription HTTP ${response.status}`);
-      error.status = response.status;
-      throw error;
-    }
-    transcription = String(payload?.text || "").trim().slice(0, 1500);
-  } catch (error) {
-    const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
-    console.error("[ESP32 voice] Groq transcription failed", {
-      status: error?.status || null,
-      timedOut,
-      reason: String(error?.message || "Unknown error").replaceAll(apiKey, "[REDACTED_API_KEY]").slice(0, 180),
-    });
-    if (timedOut || Date.now() >= deadline) throw new ServiceError("Voice transcription timed out. Please retry.", 504);
-    if (error?.status === 429) throw new ServiceError("Groq is rate limited. Please retry shortly.", 503);
-    if (error?.status === 401 || error?.status === 403) throw new ServiceError("Groq authentication failed. Check GROQ_API_KEY in Vercel.", 502);
-    if (error?.status >= 500) throw new ServiceError("Groq transcription service is temporarily unavailable.", 502);
-    throw new ServiceError("Groq voice transcription failed. Check Vercel function logs.", 502);
-  }
-
-  if (!transcription) {
-    return {
-      transcript: "",
-      wakeWordHeard: false,
-      kind: "none",
-      actionConfidence: "low",
-      actions: [],
-      clarification: null,
-      clarificationTarget: null,
-      reply: "",
-      model: process.env.GROQ_VOICE_MODEL?.trim() || "qwen/qwen3.8-27b",
-    };
-  }
-
-  const model = process.env.GROQ_VOICE_MODEL?.trim() || "qwen/qwen3.8-27b";
-  const remaining = deadline - Date.now();
-  if (remaining <= 0) throw new ServiceError("Voice analysis timed out. Please retry.", 504);
-
-  const schemaInstruction = [
-    "Return one valid JSON object only, with these fields:",
-    '{"transcript":"string","wakeWordHeard":"boolean","kind":"command|question|none","actionConfidence":"high|low","actions":[{"deviceId":"string or null","sceneId":"string or null","action":"on|off"}],"clarification":"string or null","clarificationTarget":{"deviceId":"string or null","sceneId":"string or null","targetName":"string or null"} or null,"reply":"string"}.',
-    "Do not include markdown fences or extra keys. Use empty actions for questions and none. Never guess a device or scene ID.",
-  ].join(" ");
-
-  let response;
-  try {
-    response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: schemaInstruction },
-          { role: "user", content: `${buildPrompt(catalog, session)}\n\nVerified speech transcript from Groq Whisper (use this exact text; do not rewrite it):\n${transcription}` },
-        ],
-        temperature: 0,
-        max_tokens: 320,
-        response_format: { type: "json_object" },
-      }),
-      signal: AbortSignal.timeout(remaining),
-    });
-  } catch (error) {
-    const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
-    if (timedOut || Date.now() >= deadline) throw new ServiceError("Voice analysis timed out. Please retry.", 504);
-    throw new ServiceError("Unable to reach Groq voice analysis.", 503);
-  }
-
-  const bodyText = await response.text();
-  let payload;
-  try { payload = JSON.parse(bodyText); }
-  catch { throw new ServiceError("Groq returned an invalid response. Check Vercel function logs.", 502); }
-  if (!response.ok) {
-    const detail = String(payload?.error?.message || "Unknown Groq provider error")
-      .replaceAll(apiKey, "[REDACTED_API_KEY]").slice(0, 250);
-    console.error("[ESP32 voice] Groq chat HTTP error", { status: response.status, detail });
-    if (response.status === 429) throw new ServiceError("Groq is rate limited. Please retry shortly.", 503);
-    if (response.status === 401 || response.status === 403) throw new ServiceError("Groq authentication failed. Check GROQ_API_KEY in Vercel.", 502);
-    if (response.status >= 500) throw new ServiceError("Groq service is temporarily unavailable.", 502);
-    throw new ServiceError(`Groq rejected voice analysis (${response.status}).`, 502);
-  }
-
-  const raw = String(payload?.choices?.[0]?.message?.content || "").trim();
-  let parsed;
-  try { parsed = JSON.parse(raw); }
-  catch {
-    console.error("[ESP32 voice] Groq invalid structured response", { model, responseLength: raw.length });
-    throw new ServiceError("Groq returned invalid structured JSON. Please retry.", 502);
-  }
-  if (!["command", "question", "none"].includes(parsed.kind) ||
-      !Array.isArray(parsed.actions) ||
-      typeof parsed.wakeWordHeard !== "boolean" ||
-      !["high", "low"].includes(parsed.actionConfidence)) {
-    console.error("[ESP32 voice] Groq response schema mismatch", { model, fields: Object.keys(parsed || {}) });
-    throw new ServiceError("Groq returned an incomplete voice response. Please retry.", 502);
-  }
-  return {
-    ...parsed,
-    transcript: transcription,
-    // Wake-word authorization is determined from the actual transcript below, never from model output.
-    wakeWordHeard: false,
-    clarification: typeof parsed.clarification === "string" ? parsed.clarification : null,
-    clarificationTarget: parsed.clarificationTarget && typeof parsed.clarificationTarget === "object"
-      ? parsed.clarificationTarget : null,
-    reply: typeof parsed.reply === "string" ? parsed.reply : "",
-    model,
-  };
+function makeWhisperPrompt(catalog) {
+ const names=(catalog.devices||[]).flatMap(d=>[d.name,...(d.aliases||[])]).filter(Boolean).slice(0,8).join(", ");
+ return ("Jarvis. Jarvis main light on kar do. Jarvis pankha chalao. Jarvis sari lights band karo. "+names).slice(0,190);
+}
+function isLatinTranscript(value){return !/[\u0900-\u097F\u0600-\u06FF]/u.test(String(value||""));}
+function isPromptEcho(transcript,prompt){const clean=normalizeText(transcript),expected=normalizeText(prompt);return Boolean(clean&&expected&&(clean===expected||(clean.length>35&&expected.includes(clean))));}
+async function callGroq({audio,catalog,session,deadline,wakeWindowActive=false}){
+ const apiKey=process.env.GROQ_API_KEY?.trim();if(!apiKey)throw new ServiceError("GROQ_API_KEY is not configured",503);
+ const sttModel=process.env.GROQ_STT_MODEL?.trim()||"whisper-large-v3",chatModel=process.env.GROQ_MODEL?.trim()||"qwen/qwen3.8-27b",prompt=makeWhisperPrompt(catalog);
+ const transcribe=async(language)=>{
+  const form=new FormData();form.append("file",new Blob([audio],{type:"audio/wav"}),"jarvis-voice.wav");
+  form.append("model",sttModel);form.append("language",language);form.append("prompt",prompt);form.append("temperature","0");form.append("response_format","json");
+  const response=await fetch("https://api.groq.com/openai/v1/audio/transcriptions",{method:"POST",headers:{authorization:"Bearer "+apiKey},body:form,signal:AbortSignal.timeout(Math.min(6000,Math.max(500,deadline-Date.now())))});
+  if(!response.ok){const err=new Error("Groq transcription failed");err.status=response.status;err.retryAfter=Number(response.headers.get("retry-after")||0);throw err;}
+  const payload=await response.json();return String(payload?.text||"").trim().slice(0,1500);
+ };
+ let sttLanguage=process.env.GROQ_STT_LANGUAGE?.trim()||"en",transcription="";
+ try{
+  transcription=await transcribe(sttLanguage);const firstWake=findWakeWord(transcription);
+  if((!transcription||!isLatinTranscript(transcription)||!firstWake.heard||isPromptEcho(transcription,prompt))&&sttLanguage!=="hi"&&Date.now()<deadline){sttLanguage="hi";transcription=await transcribe("hi");}
+ }catch(error){
+  if((error.status===429||error.status>=500)&&Date.now()<deadline){
+   const waitMs=Math.min(1000,Math.max(0,(error.retryAfter||1)*1000));if(waitMs)await new Promise(resolve=>setTimeout(resolve,waitMs));
+   try{transcription=await transcribe(sttLanguage);}catch(retryError){
+    if(retryError.status===401||retryError.status===403)throw new ServiceError("Groq authentication failed. Check GROQ_API_KEY.",502);
+    if(retryError.status===429)throw new ServiceError("Groq is rate limited. Please retry shortly.",503);
+    throw new ServiceError("Groq transcription service is temporarily unavailable.",502);
+   }
+  }else if(error.status===401||error.status===403)throw new ServiceError("Groq authentication failed. Check GROQ_API_KEY.",502);
+  else if(error.status===429)throw new ServiceError("Groq is rate limited. Please retry shortly.",503);
+  else if(error.status>=500)throw new ServiceError("Groq transcription service is temporarily unavailable.",502);
+  else if(error.name==="TimeoutError"||error.name==="AbortError")throw new ServiceError("Voice transcription timed out. Please retry.",504);
+  else throw new ServiceError("Groq voice transcription failed.",502);
+ }
+ if(isPromptEcho(transcription,prompt))transcription="";
+ const wake=findWakeWord(transcription),common={transcript:transcription,wakeWordHeard:wake.heard,model:chatModel,sttLanguage,wakeWordScore:wake.score};
+ if(!transcription)return {...common,kind:"none",actionConfidence:"low",actions:[],reply:""};
+ if(wake.heard&&!wake.command)return {...common,kind:"wake",actionConfidence:"high",actions:[],reply:"Haan, boliye"};
+ if(wake.heard||wakeWindowActive||(process.env.ESP32_VOICE_REQUIRE_WAKE_WORD??"true").trim().toLowerCase()==="false"){const direct=parseDeterministicVoiceCommand(wake.heard?wake.command:transcription,catalog);if(direct)return {...common,...direct};}
+ const remaining=Math.min(8000,deadline-Date.now());if(remaining<=0)throw new ServiceError("Voice analysis timed out. Please retry.",504);
+ const schema='Return JSON only: {"transcript":"string","wakeWordHeard":boolean,"kind":"command|question|none","actionConfidence":"high|low","actions":[{"deviceId":"string|null","sceneId":"string|null","action":"on|off"}],"clarification":"string|null","clarificationTarget":{"deviceId":"string|null","sceneId":"string|null","targetName":"string|null"}|null,"reply":"string"}. Never guess IDs.';
+ let response;
+ try{response=await fetch("https://api.groq.com/openai/v1/chat/completions",{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+apiKey},body:JSON.stringify({model:chatModel,messages:[{role:"system",content:schema},{role:"user",content:buildPrompt(catalog,session)+"\nVerified Whisper transcript (do not rewrite):\n"+transcription}],temperature:0,max_tokens:320,response_format:{type:"json_object"}}),signal:AbortSignal.timeout(remaining)});}
+ catch(error){if(error?.name==="TimeoutError"||error?.name==="AbortError")throw new ServiceError("Voice analysis timed out. Please retry.",504);throw new ServiceError("Unable to reach Groq voice analysis.",503);}
+ const payload=await response.json().catch(()=>null);
+ if(!response.ok){const detail=String(payload?.error?.message||"Unknown Groq provider error").replaceAll(apiKey,"[REDACTED_API_KEY]").slice(0,250);console.error("[ESP32 voice] Groq chat HTTP error",{status:response.status,detail});if(response.status===429)throw new ServiceError("Groq is rate limited. Please retry shortly.",503);if(response.status===401||response.status===403)throw new ServiceError("Groq authentication failed. Check GROQ_API_KEY.",502);throw new ServiceError("Groq voice analysis is temporarily unavailable.",response.status>=500?502:503);}
+ let parsed;try{parsed=JSON.parse(String(payload?.choices?.[0]?.message?.content||"").trim());}catch{throw new ServiceError("Groq returned invalid structured JSON.",502);}
+ if(!["command","question","none"].includes(parsed.kind)||!Array.isArray(parsed.actions)||!["high","low"].includes(parsed.actionConfidence))throw new ServiceError("Groq returned an incomplete voice response.",502);
+ return {...common,...parsed,transcript:transcription,wakeWordHeard:wake.heard,clarification:typeof parsed.clarification==="string"?parsed.clarification:null,clarificationTarget:parsed.clarificationTarget||null,reply:typeof parsed.reply==="string"?parsed.reply:""};
 }
 
 async function summarizeWithGroq(previousSummary, olderText) {
   const apiKey = process.env.GROQ_API_KEY?.trim();
   if (!apiKey) return previousSummary;
-  const model = process.env.GROQ_VOICE_MODEL?.trim() || "qwen/qwen3.8-27b";
+  const model = process.env.GROQ_MODEL?.trim() || "qwen/qwen3.8-27b";
   try {
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
@@ -267,7 +180,7 @@ function responseData(controller, values, startedAt, timingsMs) {
   console.log("[ESP32 voice] stage timings", { serverMs: timingsMs.total, timingsMs });
   return withNoStore(successResponse(
     "Voice request processed",
-    makeVoiceResponseData(controller, values, timingsMs.total, timingsMs)
+    makeVoiceResponseData(controller, { provider: "groq", sttLanguage: process.env.GROQ_STT_LANGUAGE?.trim() || "en", wakeWordScore: 0, ...values }, timingsMs.total, timingsMs)
   ));
 }
 
@@ -308,11 +221,12 @@ export async function POST(request) {
     // Record stable stage durations using the completed parallel stage's wall time.
     // Per-stage CPU work is small; database and audio preparation overlap by design.
     const wakeRequired = (process.env.ESP32_VOICE_REQUIRE_WAKE_WORD ?? "true").trim().toLowerCase() !== "false";
+    const wakeWindowActive = Boolean(session.conversation?.lastMessageAt && Date.now() - new Date(session.conversation.lastMessageAt).getTime() <= 12000);
     const deadline = Date.now() + GROQ_TIMEOUT_MS;
     // Groq Whisper transcribes the WAV; Groq Qwen interprets the transcript and selects safe actions.
     const pending = session.pendingClarification;
     const groqStarted = Date.now();
-    let parsed = await callGroq({ audio, catalog, session, deadline });
+    let parsed = await callGroq({ audio, catalog, session, deadline, wakeWindowActive });
     timingsMs.groq = Date.now() - groqStarted;
 
     const transcript = String(parsed.transcript || "").trim().slice(0, 1500);
@@ -340,7 +254,7 @@ export async function POST(request) {
       parsed.actions = [];
     }
     const wake = findWakeWord(transcript);
-    const wakeWordHeard = parsed.wakeWordHeard === true || wake.heard;
+    const wakeWordHeard = wake.heard;
     const commandTranscript = wake.heard ? wake.command : normalizeText(transcript)
       .replace(new RegExp(`(^|\\s)${normalizeText(process.env.ESP32_VOICE_WAKE_WORD || "jarvis")}(?=$|\\s)`, "iu"), " ").trim();
     console.log("[ESP32 voice] transcript + decision", {
@@ -358,8 +272,14 @@ export async function POST(request) {
     if (!transcript || parsed.kind === "none") {
       return responseData(controller, { transcript, execution: "not_executed", reason: "not_understood" }, startedAt, timingsMs);
     }
-    if (wakeRequired && !wakeWordHeard && !clarificationFollowup) {
+    if (wakeRequired && !wakeWordHeard && !wakeWindowActive && !clarificationFollowup) {
       return responseData(controller, { transcript, execution: "ignored", reason: "wake_word_missing" }, startedAt, timingsMs);
+    }
+
+    if (parsed.kind === "wake") {
+      const reply = "Haan, boliye";
+      after(async () => { try { await persistEsp32VoiceTurn({ sessionId: session.conversation?._id, userId: String(controller.ownerId), homeId, controllerId: controller.esp32DeviceId, transcript, reply, actions: [], pinnedCount: session.conversation?.pinnedMessages?.length || 0 }); } catch (error) { console.error("[ESP32 voice] wake session save failed", error?.message); } });
+      return responseData(controller, { transcript, execution: "processed", reason: "wake_word_acknowledged", reply, provider: "groq", sttLanguage: parsed.sttLanguage, wakeWordScore: wake.score }, startedAt, timingsMs);
     }
 
     if (parsed.kind === "question") {
@@ -373,7 +293,7 @@ export async function POST(request) {
           });
         } catch (error) { console.error("[ESP32 voice] conversation save failed", error?.message); }
       });
-      return responseData(controller, { transcript, execution: "processed", reason: "question_answered", reply }, startedAt, timingsMs);
+      return responseData(controller, { transcript, execution: "processed", reason: "question_answered", reply, provider: "groq", sttLanguage: parsed.sttLanguage, wakeWordScore: wake.score }, startedAt, timingsMs);
     }
 
     if (parsed.actionConfidence !== "high" || parsed.clarification || !parsed.actions?.length) {
@@ -394,7 +314,7 @@ export async function POST(request) {
           });
         } catch (error) { console.error("[ESP32 voice] clarification save failed", error?.message); }
       });
-      return responseData(controller, { transcript, execution: "needs_clarification", reason: "ambiguous_or_low_confidence", reply: question }, startedAt, timingsMs);
+      return responseData(controller, { transcript, execution: "needs_clarification", reason: "ambiguous_or_low_confidence", reply: question, provider: "groq", sttLanguage: parsed.sttLanguage, wakeWordScore: wake.score }, startedAt, timingsMs);
     }
 
     const devicesById = new Map(catalog.devices.map((d) => [d.id, d]));
@@ -456,7 +376,7 @@ export async function POST(request) {
     });
     return responseData(controller, {
       transcript, execution: "processed", reason: "command_queued", reply, commands,
-      details: executionResults,
+      details: executionResults, provider: "groq", sttLanguage: parsed.sttLanguage, wakeWordScore: wake.score,
     }, startedAt, timingsMs);
   } catch (error) {
     console.error("[ESP32 voice] request failed", { totalMs: Date.now() - startedAt, status: error?.statusCode || 500, message: error?.message });

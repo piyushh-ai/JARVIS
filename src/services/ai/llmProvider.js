@@ -5,30 +5,9 @@ const MIN_TIMEOUT_MS = 5000;
 const MAX_TIMEOUT_MS = 45000;
 const DEFAULT_MAX_TOKENS = 220;
 
-const PROVIDER_ORDER = ["groq", "mistral", "gemini", "openai"];
+const PROVIDER_ORDER = ["groq"];
 
-const PROVIDER_DEFAULTS = Object.freeze({
-  gemini: Object.freeze({
-    defaultModel: "gemini-3.1-flash-lite",
-    fallbackModels: ["gemini-3.1-flash-lite", "gemini-3-flash-preview"],
-    apiBase: "https://generativelanguage.googleapis.com/v1beta",
-  }),
-  mistral: Object.freeze({
-    defaultModel: "mistral-small-latest",
-    fallbackModels: [],
-    apiBase: "https://api.mistral.ai/v1",
-  }),
-  groq: Object.freeze({
-    defaultModel: "qwen/qwen3.8-27b",
-    fallbackModels: [],
-    apiBase: "https://api.groq.com/openai/v1",
-  }),
-  openai: Object.freeze({
-    defaultModel: "gpt-4o-mini",
-    fallbackModels: [],
-    apiBase: "https://api.openai.com/v1",
-  }),
-});
+const PROVIDER_DEFAULTS = Object.freeze({ groq: Object.freeze({ defaultModel: "qwen/qwen3.8-27b", fallbackModels: [], apiBase: "https://api.groq.com/openai/v1" }) });
 
 function resolveTimeoutMs(overrideMs) {
   const raw = overrideMs ?? Number(process.env.AI_TIMEOUT_MS);
@@ -36,25 +15,7 @@ function resolveTimeoutMs(overrideMs) {
   return Math.min(MAX_TIMEOUT_MS, Math.max(MIN_TIMEOUT_MS, Math.round(raw)));
 }
 
-function getProviderApiKey(provider) {
-  if (provider === "gemini") {
-    return (
-      process.env.GEMINI_API_KEY?.trim() ||
-      process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim() ||
-      ""
-    );
-  }
-  if (provider === "mistral") {
-    return process.env.MISTRAL_API_KEY?.trim() || "";
-  }
-  if (provider === "groq") {
-    return process.env.GROQ_API_KEY?.trim() || "";
-  }
-  if (provider === "openai") {
-    return process.env.OPENAI_API_KEY?.trim() || "";
-  }
-  return "";
-}
+function getProviderApiKey(provider) { return provider === "groq" ? process.env.GROQ_API_KEY?.trim() || "" : ""; }
 
 /**
  * Resolves active primary LLM provider and available failover chain from server env vars.
@@ -71,7 +32,7 @@ export function resolveLlmConfig() {
         model: null,
         apiKey: "",
         failoverChain: [],
-        error: `Unsupported AI_PROVIDER "${explicitProvider}". Supported: gemini, mistral, groq, openai.`,
+        error: `Unsupported AI_PROVIDER "${explicitProvider}". Supported: groq.`,
       };
     }
     provider = explicitProvider;
@@ -92,13 +53,13 @@ export function resolveLlmConfig() {
       apiKey: "",
       failoverChain: [],
       error:
-        "No AI provider API key is configured on the server. Set GROQ_API_KEY, MISTRAL_API_KEY, GEMINI_API_KEY, or OPENAI_API_KEY.",
+        "No AI provider API key is configured on the server. Set GROQ_API_KEY.",
     };
   }
 
   const apiKey = getProviderApiKey(provider);
   const model =
-    process.env.AI_MODEL?.trim() || PROVIDER_DEFAULTS[provider].defaultModel;
+    process.env.GROQ_MODEL?.trim() || process.env.AI_MODEL?.trim() || PROVIDER_DEFAULTS[provider].defaultModel;
 
   // Build backup provider configs for automatic cross-provider failover (e.g. Groq -> Mistral)
   const failoverChain = [];
@@ -157,7 +118,7 @@ export function getProviderStatus() {
       ? {}
       : {
           message:
-            "Server AI provider is not configured. Configure an AI provider API key (Groq, Mistral, Gemini, or OpenAI) in server environment variables.",
+            "Server AI provider is not configured. Configure GROQ_API_KEY in server environment variables.",
         }),
   };
 }
@@ -228,19 +189,6 @@ async function runSingleProviderStep({
   timeoutMs,
   allowModelFallbacks,
 }) {
-  if (providerCfg.provider === "gemini") {
-    return callGeminiStep({
-      cfg: providerCfg,
-      systemPrompt,
-      messages,
-      toolSchemas,
-      continuationState,
-      toolResults,
-      timeoutMs,
-      allowModelFallbacks,
-    });
-  }
-
   return callOpenAiCompatibleStep({
     cfg: providerCfg,
     systemPrompt,
@@ -253,8 +201,8 @@ async function runSingleProviderStep({
 }
 
 /**
- * Normalizes Gemini generateContent + OpenAI/Mistral/Groq tool-calling loops
- * with automatic cross-provider failover (e.g. Gemini -> Mistral on failure/timeout).
+ * Normalizes Groq OpenAI-compatible tool-calling loops
+ * with Groq-only provider execution.
  */
 export async function runProviderToolStep({
   systemPrompt,
@@ -320,180 +268,14 @@ export async function runProviderToolStep({
         continuationState: null,
         toolResults: [],
         timeoutMs: perProviderTimeout,
-        allowModelFallbacks: !hasBackupProvider || providerCfg.provider === "gemini",
+        allowModelFallbacks: false,
       });
     } catch (err) {
       lastError = err;
       if (!hasBackupProvider) {
         throw err;
       }
-      // Fail over automatically across providers (e.g., Gemini unavailable -> Mistral)
-    }
-  }
-
-  throw lastError;
-}
-
-async function callGeminiSingleAttempt({
-  cfg,
-  model,
-  contents,
-  systemPrompt,
-  toolSchemas,
-  timeoutMs,
-}) {
-  const endpoint = `${PROVIDER_DEFAULTS.gemini.apiBase}/models/${encodeURIComponent(model)}:generateContent`;
-  const payload = {
-    systemInstruction: {
-      parts: [{ text: systemPrompt }],
-    },
-    contents,
-    tools: [
-      {
-        functionDeclarations: toolSchemas.map((tool) => ({
-          name: tool.name,
-          description: tool.description,
-          parametersJsonSchema: tool.parameters,
-        })),
-      },
-    ],
-    generationConfig: {
-      temperature: 0.2,
-      maxOutputTokens: DEFAULT_MAX_TOKENS,
-    },
-  };
-
-  let res;
-  try {
-    res = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-goog-api-key": cfg.apiKey,
-      },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch (err) {
-    handleFetchError(err, "gemini");
-  }
-
-  const rawText = await res.text().catch(() => "");
-  let parsed = null;
-  try {
-    parsed = rawText ? JSON.parse(rawText) : null;
-  } catch {
-    parsed = null;
-  }
-
-  if (!res.ok) {
-    throwForHttpStatus(res.status, "gemini", parsed?.error?.message || rawText);
-  }
-
-  const candidate = parsed?.candidates?.[0];
-  const candidateContent = candidate?.content;
-  const parts = Array.isArray(candidateContent?.parts)
-    ? candidateContent.parts
-    : [];
-
-  const toolCalls = [];
-  const textChunks = [];
-  for (const part of parts) {
-    if (part?.functionCall?.name) {
-      toolCalls.push({
-        id: part.functionCall.id || null,
-        name: part.functionCall.name,
-        args:
-          part.functionCall.args && typeof part.functionCall.args === "object"
-            ? part.functionCall.args
-            : {},
-      });
-    } else if (typeof part?.text === "string" && !part.thought) {
-      textChunks.push(part.text);
-    }
-  }
-
-  return {
-    provider: cfg.provider,
-    model,
-    text: textChunks.join("").trim(),
-    toolCalls,
-    continuationState: {
-      provider: cfg.provider,
-      model,
-      contents: [
-        ...contents,
-        candidateContent || { role: "model", parts },
-      ],
-    },
-  };
-}
-
-async function callGeminiStep({
-  cfg,
-  systemPrompt,
-  messages,
-  toolSchemas,
-  continuationState,
-  toolResults,
-  timeoutMs,
-  allowModelFallbacks = true,
-}) {
-  let contents;
-  if (continuationState?.contents) {
-    contents = [
-      ...continuationState.contents,
-      {
-        role: "user",
-        parts: toolResults.map((entry) => ({
-          functionResponse: {
-            ...(entry.id ? { id: entry.id } : {}),
-            name: entry.name,
-            response: { result: entry.result },
-          },
-        })),
-      },
-    ];
-  } else {
-    contents = messages.map((msg) => ({
-      role: msg.role === "assistant" ? "model" : "user",
-      parts: [{ text: String(msg.content || "") }],
-    }));
-  }
-
-  const primaryModel = continuationState?.model || cfg.model;
-  const fallbackPool =
-    continuationState?.model || !allowModelFallbacks
-      ? []
-      : PROVIDER_DEFAULTS.gemini.fallbackModels;
-  const candidateModels = Array.from(new Set([primaryModel, ...fallbackPool]));
-
-  let lastError = null;
-  for (let idx = 0; idx < candidateModels.length; idx++) {
-    const model = candidateModels[idx];
-    const hasNext = idx < candidateModels.length - 1;
-    const attemptTimeoutMs = hasNext ? Math.min(timeoutMs, 6500) : timeoutMs;
-
-    try {
-      return await callGeminiSingleAttempt({
-        cfg,
-        model,
-        contents,
-        systemPrompt,
-        toolSchemas,
-        timeoutMs: attemptTimeoutMs,
-      });
-    } catch (err) {
-      lastError = err;
-      const isRetryableTransient =
-        err instanceof ServiceError &&
-        (err.statusCode === 503 || err.statusCode === 504 || err.statusCode === 502);
-      const isAuthFailure =
-        err instanceof ServiceError && /authentication failed/i.test(err.message);
-
-      if (!hasNext || !isRetryableTransient || isAuthFailure) {
-        throw err;
-      }
+      // Groq is the sole configured provider; no cross-provider failover.
     }
   }
 

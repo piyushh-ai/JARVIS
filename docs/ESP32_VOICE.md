@@ -4,7 +4,7 @@
 
 Firmware v1.6.0 sends a RIFF/WAVE G.711 mu-law (format tag 7), mono, 16 kHz, 8-bit payload to `POST /api/esp32/voice`, with `X-Audio-Codec: mulaw`. The server decodes it to PCM16, removes DC offset, normalizes quiet audio toward a 23000 peak (about -3 dBFS, gain capped at 40x), and sends a 16 kHz mono PCM16 WAV to Groq Whisper for transcription. The previous firmware format—8 kHz mono PCM16 WAV—is still accepted and resampled to 16 kHz.
 
-The audio conversion is typed-array/buffer work only; it does not load an audio-processing library. The endpoint uses Groq Whisper (`whisper-large-v3-turbo`) for multilingual transcription, followed by Groq Qwen (`qwen/qwen3.8-27b`) for intent classification, Home-catalog grounding, and session-aware answers. It keeps the existing Home-scoped command queue and atomically claims commands for immediate delivery in the voice response.
+The audio conversion is typed-array/buffer work only; it does not load an audio-processing library. The endpoint uses Groq Whisper (`whisper-large-v3`) for multilingual transcription, followed by Groq Qwen (`qwen/qwen3.8-27b`) for intent classification, Home-catalog grounding, and session-aware answers. It keeps the existing Home-scoped command queue and atomically claims commands for immediate delivery in the voice response.
 
 The wake word is an attention gate, not speaker authentication or proof of identity. The ESP32 controller token authenticates the hardware and voice actions are attributed to the controller's registered Home owner. Do not use voice control for locks, alarms, or safety-critical actuators.
 
@@ -22,8 +22,8 @@ Configure these server-only values in Vercel Project Settings → Environment Va
 | Variable | Default | Purpose |
 |---|---|---|
 | `GROQ_API_KEY` | — | Required for audio transcription and voice reasoning |
-| `GROQ_VOICE_STT_MODEL` | `whisper-large-v3-turbo` | Multilingual audio transcription |
-| `GROQ_VOICE_MODEL` | `qwen/qwen3.8-27b` | Voice intent, catalog grounding, and answers |
+| `GROQ_STT_MODEL` | `whisper-large-v3` | Multilingual audio transcription |
+| `GROQ_MODEL` | `qwen/qwen3.8-27b` | Voice intent, catalog grounding, and answers |
 | `ESP32_VOICE_WAKE_WORD` | `jarvis` | Configured wake word |
 | `ESP32_VOICE_REQUIRE_WAKE_WORD` | `true` | Require wake word except a recent clarification follow-up |
 | `ESP32_VOICE_SESSION_IDLE_MIN` | `15` | Start a new voice session after this many idle minutes |
@@ -159,7 +159,7 @@ Hardware acceptance sequence:
 - HTTP 400/415: verify RIFF/WAVE header, format tag, sample rate, channel count, bit depth, data chunk length, and `X-Audio-Codec`.
 - HTTP 413: clip exceeds 256 KB.
 - HTTP 429: respect the existing rate-limit response and retry interval.
-- Incorrect on/off: inspect the logged transcript and decision; inspect the Whisper transcript and `GROQ_VOICE_MODEL` response; try `whisper-large-v3` if transcription accuracy is insufficient.
+- Incorrect on/off: inspect the logged transcript and decision; inspect the Whisper transcript and `GROQ_MODEL` response; try `whisper-large-v3` if transcription accuracy is insufficient.
 - Command queued but not executed: check inline `data.commands`, relay number, ACK logs, and then normal pending polling/lease expiry.
 - Slow requests: compare logged `auth`, `catalog`, `decode`, `groq`, `execute`, and `total`. A sub-1.5-second total is a target, not a guaranteed SLA; Groq network/model latency is outside the server's control.
 
@@ -173,7 +173,7 @@ The ESP32 may report HTTP 502 when Groq rejects a transcription or chat-completi
 
 - Upstream **400**: inspect the Groq transcription model, WAV format, and chat request options.
 - Upstream **401/403**: check the server-side `GROQ_API_KEY`.
-- Upstream **404**: check `GROQ_VOICE_MODEL` and `GROQ_VOICE_STT_MODEL` availability.
+- Upstream **404**: check `GROQ_MODEL` and `GROQ_STT_MODEL` availability.
 - Upstream **429**: check Groq quota/rate limits; the route returns a retryable 503.
 - Upstream **5xx**: likely a temporary provider failure.
 - 
