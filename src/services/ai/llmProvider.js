@@ -19,7 +19,7 @@ const PROVIDER_DEFAULTS = Object.freeze({
     apiBase: "https://api.mistral.ai/v1",
   }),
   groq: Object.freeze({
-    defaultModel: "llama-3.3-70b-versatile",
+    defaultModel: "qwen/qwen3.8-27b",
     fallbackModels: [],
     apiBase: "https://api.groq.com/openai/v1",
   }),
