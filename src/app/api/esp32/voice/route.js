@@ -300,7 +300,7 @@ export async function POST(request) {
     }
 
     if (parsed.actionConfidence !== "high" || parsed.clarification || !parsed.actions?.length) {
-      const question = String(parsed.clarification || "On karun ya off?").slice(0, 180);
+      const question = String(parsed.clarification || (parsed.clarificationTarget?.deviceId || parsed.clarificationTarget?.sceneId ? "On karun ya off?" : "Kaunsa device control karna hai?")).slice(0, 180);
       const target = parsed.clarificationTarget || {};
       const pendingClarification = {
         ...(target.deviceId ? { deviceId: String(target.deviceId) } : {}),
