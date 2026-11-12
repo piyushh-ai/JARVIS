@@ -359,7 +359,7 @@ JARVIS builds cleanly for Vercel's Node.js Serverless runtime without local disk
    - `MONGODB_URI` *(Required, server-only)* — Your MongoDB Atlas connection string. **Never** prefix with `NEXT_PUBLIC_`.
    - `SESSION_SECRET` *(Recommended, server-only)* — HMAC pepper for hashing `jarvis_session` cookies in MongoDB.
    - `ESP32_TOKEN_PEPPER` *(Recommended, server-only)* — HMAC pepper for hashing per-device ESP32 Bearer tokens.
-   - `GEMINI_API_KEY` / `GROQ_API_KEY` / `OPENAI_API_KEY` *(Required for live AI Assistant, server-only)* — LLM provider key (optional `AI_PROVIDER`, `AI_MODEL`, `AI_TIMEOUT_MS`).
+   - `GEMINI_API_KEY` *(Required for ESP32 audio voice, server-only)* — Gemini API key. Optional voice settings: `GEMINI_VOICE_MODEL` (`gemini-2.5-flash-lite`), `GEMINI_VOICE_FALLBACK_MODEL` (`gemini-2.5-flash`), `ESP32_VOICE_WAKE_WORD` (`jarvis`), `ESP32_VOICE_REQUIRE_WAKE_WORD` (`true`), and `ESP32_VOICE_SESSION_IDLE_MIN` (`15`).\n   - `GROQ_API_KEY` / `OPENAI_API_KEY` / `MISTRAL_API_KEY` *(Optional for text assistant, server-only)* — existing provider keys (`AI_PROVIDER`, `AI_MODEL`, `AI_TIMEOUT_MS`).
    - `NEXT_PUBLIC_API_BASE_URL` *(Optional)* — Leave unset so client requests use same-origin `/api` (`src/lib/api/client.js`).
 4. **Deploy & Verify:**
    - Trigger **Deploy** and inspect build logs.
