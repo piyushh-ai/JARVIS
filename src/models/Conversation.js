@@ -80,7 +80,7 @@ const conversationSchema = new mongoose.Schema(
     source: { type: String, enum: ["assistant-web", "esp32-voice"], default: "assistant-web", index: true },
     controllerId: { type: String, default: null, trim: true, maxlength: 100 },
     sessionStartedAt: { type: Date, default: null },
-    summary: { type: String, default: "", maxlength: 5000 },
+    summary: { type: String, default: "", maxlength: 5000 },\n    summaryThroughMessageCount: { type: Number, default: 0, min: 0 },
     firstUserMessage: { type: String, default: "", maxlength: 1500 },
     pendingClarification: {
       type: new mongoose.Schema({ deviceId: String, sceneId: String, targetName: String, createdAt: Date }, { _id: false }),
