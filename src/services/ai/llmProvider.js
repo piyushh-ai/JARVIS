@@ -100,7 +100,7 @@ export function resolveLlmConfig() {
   const model =
     process.env.AI_MODEL?.trim() || PROVIDER_DEFAULTS[provider].defaultModel;
 
-  // Build backup provider configs for automatic cross-provider failover (e.g. Gemini -> Mistral)
+  // Build backup provider configs for automatic cross-provider failover (e.g. Groq -> Mistral)
   const failoverChain = [];
   for (const candidate of PROVIDER_ORDER) {
     if (candidate === provider) continue;
@@ -157,7 +157,7 @@ export function getProviderStatus() {
       ? {}
       : {
           message:
-            "Server AI provider is not configured. Configure an AI provider API key (Gemini, Mistral, Groq, or OpenAI) in server environment variables.",
+            "Server AI provider is not configured. Configure an AI provider API key (Groq, Mistral, Gemini, or OpenAI) in server environment variables.",
         }),
   };
 }
