@@ -13,6 +13,7 @@ import { parseAndPrepareVoiceWav } from "@/services/ai/esp32VoiceAudio";
 import { getCachedVoiceCatalog, setCachedVoiceCatalog } from "@/services/ai/esp32VoiceCache";
 import { loadEsp32VoiceSession, persistEsp32VoiceTurn, refreshEsp32VoiceSummary } from "@/services/ai/esp32VoiceSessionService";
 import { claimPendingCommands } from "@/services/commandService";
+import { normalizeVoiceText as normalizeText, findWakeWord, parseFollowupAction, detectExplicitAction, hasConflictingExplicitActions, toInlineVoiceCommands } from "@/services/ai/esp32VoiceLogic";
 
 export const maxDuration = 30;
 // Keep this aligned with the MongoDB Atlas cluster's region.
@@ -28,21 +29,6 @@ const SCENE_ACTION = {
   all_lights_on: "on",
   all_lights_off: "off",
 };
-
-function normalizeText(value) {
-  return String(value || "").toLocaleLowerCase("en-IN").normalize("NFKC")
-    .replace(/[’']/g, "").replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
-}
-
-export function findWakeWord(text) {
-  const normalized = normalizeText(text);
-  for (const alias of WAKE_WORD_ALIASES) {
-    const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const match = normalized.match(new RegExp(`(^|\\s)${escaped}(?=$|\\s)`, "iu"));
-    if (match) return { heard: true, command: normalized.replace(match[0], " ").trim() };
-  }
-  return { heard: false, command: normalized };
-}
 
 async function readBoundedAudio(request) {
   const declaredLength = Number(request.headers.get("content-length") || 0);
@@ -287,7 +273,7 @@ export async function POST(request) {
     const transcript = String(parsed.transcript || "").trim().slice(0, 1500);
     const quickAction = pending && Date.now() - new Date(pending.createdAt || 0).getTime() <= 30000
       ? parseFollowupAction(transcript) : null;
-    const clarificationFollowup = Boolean(quickAction && (pending.deviceId || pending.sceneId));\n    const explicitAction = detectExplicitAction(transcript);\n    const explicitOnAndOff = /\\b(on|chalu|start|jala do|jalao|kholo)\\b/u.test(normalizeText(transcript)) && /\\b(off|band|stop|bujha do|bujhao)\\b/u.test(normalizeText(transcript));\n    if (explicitOnAndOff) {\n      parsed.actionConfidence = "low";\n      parsed.clarification = "On karun ya off?";\n      parsed.actions = [];\n    } else if (explicitAction && parsed.actions?.length) {\n      parsed.actions = parsed.actions.map((item) => ({ ...item, action: explicitAction }));\n    }
+    const clarificationFollowup = Boolean(quickAction && (pending.deviceId || pending.sceneId));\n    const explicitAction = detectExplicitAction(transcript);\n    const explicitOnAndOff = hasConflictingExplicitActions(transcript);\n    if (explicitOnAndOff) {\n      parsed.actionConfidence = "low";\n      parsed.clarification = "On karun ya off?";\n      parsed.actions = [];\n    } else if (explicitAction && parsed.actions?.length) {\n      parsed.actions = parsed.actions.map((item) => ({ ...item, action: explicitAction }));\n    }
     if (clarificationFollowup) {
       parsed = {
         ...parsed, kind: "command", actionConfidence: "high", clarification: null,
