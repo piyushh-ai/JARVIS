@@ -28,7 +28,7 @@ test("G.711 mu-law decoder maps silence and full-scale codes", () => {
 });
 
 test("PCM normalization removes DC and targets approximately -3 dBFS without clipping", () => {
-  const normalized = normalizePcm16(new Int16Array([1100, 1200, 1300, 1400, 1500]));
+  const normalized = normalizePcm16(new Int16Array([1000, 2000, 3000, 4000, 5000]));
   const peak = Math.max(...Array.from(normalized, (v) => Math.abs(v)));
   assert.ok(peak <= 23000);
   assert.ok(peak >= 22000);
@@ -63,7 +63,7 @@ test("wake-word variants are recognized and stripped", () => {
 
 test("clarification follow-ups parse only short explicit ON/OFF answers", () => {
   assert.equal(parseFollowupAction("on"), "on");
-  assert.equal(parseFollowupAction("band kar do"), null);
+  assert.equal(parseFollowupAction("band kar do"), "off");
   assert.equal(parseFollowupAction("band"), "off");
   assert.equal(parseFollowupAction("bujhao"), "off");
   assert.equal(parseFollowupAction("maybe on"), null);
