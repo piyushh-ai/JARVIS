@@ -5,12 +5,12 @@ const MAX_AUDIO_BYTES = 384 * 1024;
 
 const ALLOWED_AUDIO_TYPES = new Set([
   "audio/wav",
-  "audio/x-wav",
   "audio/mpeg",
   "audio/mp3",
-  "audio/ogg",
-  "audio/webm",
+  "audio/aiff",
   "audio/aac",
+  "audio/ogg",
+  "audio/flac",
   "audio/pcm;rate=16000",
 ]);
 
@@ -41,7 +41,7 @@ export async function transcribeAudioBuffer(audioBuffer, contentType) {
   const mimeType = normalizeMimeType(contentType);
   if (!ALLOWED_AUDIO_TYPES.has(mimeType)) {
     throw new ServiceError(
-      "Unsupported audio format. Send WAV, MP3, OGG, WEBM, AAC, or 16 kHz PCM.",
+      "Unsupported audio format. Send WAV, MP3, AIFF, AAC, OGG, FLAC, or 16 kHz PCM.",
       415
     );
   }
@@ -93,7 +93,6 @@ export async function transcribeAudioBuffer(audioBuffer, contentType) {
   }
 
   if (!response.ok) {
-    // Do not return upstream response bodies because they can contain request metadata.
     if (response.status === 429) {
       throw new ServiceError("Speech service rate limit reached. Try again shortly.", 429);
     }
@@ -116,11 +115,7 @@ export async function transcribeAudioBuffer(audioBuffer, contentType) {
     .trim();
 
   if (!transcript) {
-    return {
-      transcript: "",
-      model,
-      detectedSpeech: false,
-    };
+    return { transcript: "", model, detectedSpeech: false };
   }
 
   return {
