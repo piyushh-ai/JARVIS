@@ -207,13 +207,6 @@ function responseData(controller, values, startedAt, timingsMs) {
   ));
 }
 
-export function parseFollowupAction(text) {
-  const value = normalizeText(text);
-  if (/^(on|chalu|start|jala do|jalao)$/.test(value)) return "on";
-  if (/^(off|band|stop|bujha do|bujhao)$/.test(value)) return "off";
-  return null;
-}
-
 export { parseAndPrepareVoiceWav };
 
 export async function POST(request) {
@@ -282,6 +275,11 @@ export async function POST(request) {
         actions: [{ ...(pending.deviceId ? { deviceId: pending.deviceId } : { sceneId: pending.sceneId }), action: quickAction }],
         reply: "",
       };
+    }
+    if (parsed.actions?.some((item) => item.sceneId && SCENE_ACTION[item.sceneId] !== item.action)) {
+      parsed.actionConfidence = "low";
+      parsed.clarification = "On karun ya off?";
+      parsed.actions = [];
     }
     const wake = findWakeWord(transcript);
     const wakeWordHeard = parsed.wakeWordHeard === true || wake.heard;
