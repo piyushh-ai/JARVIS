@@ -1,22 +1,36 @@
-# ESP32 Voice Control — Firmware v1.5.0
+# ESP32 Voice Control — Firmware v1.6.0
 
 ## Overview
 
-The ESP32 uploads raw 8 kHz mono PCM16 WAV clips to the authenticated voice endpoint. Clips may be 0.5–4 seconds and up to 256 KB. Gemini receives the audio once and returns structured JSON containing the transcript, wake-word decision, intent, and catalog-resolved actions. Device commands go directly through JARVIS's existing Home-scoped command queue; informational questions use the existing assistant service.
+Firmware v1.6.0 sends a RIFF/WAVE G.711 mu-law (format tag 7), mono, 16 kHz, 8-bit payload to `POST /api/esp32/voice`, with `X-Audio-Codec: mulaw`. The server decodes it to PCM16, removes DC offset, normalizes quiet audio toward a 23000 peak (about -3 dBFS, gain capped at 40x), and sends a 16 kHz mono PCM16 WAV to Gemini. The previous firmware format—8 kHz mono PCM16 WAV—is still accepted and resampled to 16 kHz.
+
+The audio conversion is typed-array/buffer work only; it does not load an audio-processing library. The endpoint uses one Gemini call for transcription, intent, catalog grounding, and session-aware answers. It keeps the existing Home-scoped command queue and atomically claims commands for immediate delivery in the voice response.
 
 The wake word is an attention gate, not speaker authentication or proof of identity. The ESP32 controller token authenticates the hardware and voice actions are attributed to the controller's registered Home owner. Do not use voice control for locks, alarms, or safety-critical actuators.
 
+## Vercel region and database connection
+
+- Set `preferredRegion = "bom1"` in the route when the MongoDB Atlas cluster is in Mumbai. Change it to the region nearest the actual Atlas cluster.
+- In Vercel, open **Project → Settings → Functions → Region** and confirm it matches the Atlas cluster's region. The route's preferred region is a deployment hint; confirm the project/function region setting too.
+- `src/lib/db/connect.js` caches the Mongoose connection and in-flight connection promise on `globalThis`, so warm serverless instances reuse the connection.
+- This project has `cacheComponents: true`. Next.js rejects an explicit `runtime = "nodejs"` segment export with that setting; Node.js is already the default runtime. Keep the default and do not add that export unless the Next.js configuration changes.
+
 ## Environment variables
 
-Configure these server-only variables in Vercel Project Settings → Environment Variables:
+Configure these server-only values in Vercel Project Settings → Environment Variables:
 
-- `GEMINI_API_KEY` — required for audio understanding.
-- `ESP32_VOICE_WAKE_WORD` — optional; defaults to `jarvis`.
-- `ESP32_VOICE_REQUIRE_WAKE_WORD` — optional; defaults to `true`. Set to `false` only if commands without the wake word are intentionally allowed.
-- `GEMINI_VOICE_MODEL` — optional primary model override; defaults to `gemini-2.5-flash-lite`.
-- `GEMINI_VOICE_FALLBACK_MODEL` — optional Gemini-only fallback; defaults to `gemini-2.5-flash`.
+| Variable | Default | Purpose |
+|---|---|---|
+| `GEMINI_API_KEY` | — | Required for audio understanding |
+| `GEMINI_VOICE_MODEL` | `gemini-2.5-flash-lite` | Primary audio parser model |
+| `GEMINI_VOICE_FALLBACK_MODEL` | `gemini-2.5-flash` | Gemini-only fallback |
+| `ESP32_VOICE_WAKE_WORD` | `jarvis` | Configured wake word |
+| `ESP32_VOICE_REQUIRE_WAKE_WORD` | `true` | Require wake word except a recent clarification follow-up |
+| `ESP32_VOICE_SESSION_IDLE_MIN` | `15` | Start a new voice session after this many idle minutes |
+| `ESP32_TOKEN_PEPPER` | existing secret | Existing controller-token hashing pepper |
+| `MONGODB_URI` | — | Existing Atlas connection string |
 
-
+The controller authentication lookup is cached in module memory for up to 15 seconds by controller ID + token hash. Revocation and token rotation therefore take effect on warm instances within at most that cache window (usually sooner after instance eviction). The existing IP/device rate limits still run on every request.
 
 ## Audio request
 
@@ -27,67 +41,128 @@ Headers:
 - `X-Device-Id: ESP32-001`
 - `Authorization: Bearer <controller-token>`
 - `Content-Type: audio/wav`
+- `X-Audio-Codec: mulaw` (required for format tag 7; omit for legacy PCM16)
 
-Body: raw RIFF/WAVE bytes containing PCM16 mono audio. The server validates the RIFF/WAVE structure, PCM encoding, channel count, bit depth, and data chunk length. Maximum body size is 256 KB. No fixed clip duration is required.
+Firmware v1.6.0 body:
 
-The endpoint retains the existing ESP32 controller authentication. It applies an additional per-controller limit of approximately 30 voice uploads per minute.
+- RIFF/WAVE
+- `fmt ` chunk length 16
+- format tag 7 (G.711 mu-law)
+- mono, 16000 Hz, 8 bits
+- no `fact` chunk required
+- data chunk up to approximately 64 KB
 
-## Wake-word behavior
+Legacy firmware remains supported:
 
-The default wake word is `jarvis`. The parser tolerates common recognition variants including “jarvish”, “jarwis”, “jarvas”, “javis”, “jarviss”, and “जार्विस”. The wake word is removed from the command transcript before processing.
+- PCM format tag 1
+- mono, 8000 Hz, 16 bits
+- `X-Audio-Codec` omitted or set to a non-mulaw value
 
-When wake-word enforcement is enabled and no wake word is detected, the endpoint returns HTTP 200 with:
+The server accepts up to 256 KB, validates RIFF/chunk boundaries, and rejects format/header mismatches. No fixed clip duration is required.
 
-- `execution: "ignored"`
-- `reason: "wake_word_missing"`
-- an empty `reply`
-- no device/scene execution and no conversation-memory write
+## Wake word, intent, and clarification
 
-Unintelligible audio or background noise also returns HTTP 200 with `execution: "ignored"` and `reason: "not_understood"`. Ambiguous targets return `execution: "needs_clarification"` with a short question. Clear commands return `execution: "processed"` after commands have been queued.
+The default wake word is `jarvis`. Common variants are accepted: “jarvish”, “jarwis”, “jarvas”, “javis”, “jarviss”, and “जार्विस”. The wake word is stripped from the saved transcript and command text.
+
+The parser understands Hinglish/Hindi/English. ON phrases include “on”, “chalu”, “start”, “jala do”, “jalao”, and “kholo”. OFF phrases include “off”, “band”, “stop”, “bujha do”, and “bujhao”. The prompt explicitly tells Gemini to distinguish the final consonant in “on” versus “off”. When a clear single action phrase is present, the server also applies that explicit polarity deterministically. If both polarities are present, or Gemini marks the action/target uncertain, the server does not execute and returns `execution: "needs_clarification"` (typically “On karun ya off?”).
+
+A clarification target is retained for 30 seconds. A short next utterance such as “on”, “band”, or “band kar do” can answer it without repeating the wake word. The follow-up is still transcribed once by Gemini; the pending target/action are then applied deterministically.
+
+## Conversation memory
+
+Voice sessions are isolated by `(userId, homeId, source="esp32-voice", controllerId)`. A new turn continues the latest session while its last message is within `ESP32_VOICE_SESSION_IDLE_MIN` (default 15 minutes); after that idle window a new session is created.
+
+Each processed turn stores the wake-word-stripped user transcript, JARVIS reply, and executed actions. Ignored/empty audio is not stored. Gemini receives:
+
+1. The first two turns, pinned separately from the rolling message window.
+2. The rolling text summary.
+3. The latest 12 turns verbatim (each message bounded to keep prompt size controlled).
+
+After the session grows beyond roughly 16 messages, a cheap text-only Gemini summary refresh runs in `after()`. The voice response does not wait for conversation persistence or summary refresh. Cross-session long-term memory and semantic recall are phase 2; no LangChain or vector database is added to this request path.
+
+Questions such as “kaun si light on hai?” and “mera pehla sawal kya tha?” are answered by the same audio+catalog+context Gemini call. The legacy `/assistant` text-chat route is not changed.
+
+## Inline command delivery and ACK
+
+After the existing device/scene service queues commands, the voice route calls the same atomic `claimPendingCommands` lease function used by `GET /api/esp32/commands/pending`. Claimed commands are returned immediately in `data.commands`:
+
+```json
+{
+  "commandId": "cmd_example",
+  "relayNumber": 2,
+  "action": "on",
+  "ttlRemainingMs": 12000
+}
+```
+
+The ESP32 should execute these commands immediately and send the existing ACK request unchanged. The claim increments the attempt count and sets the normal processing lease. If a command is not executed/ACKed, lease expiry allows the existing pending-command polling path to retry it. The normal pending endpoint remains available as fallback.
 
 ## Response contract
 
-Successful responses preserve this firmware-facing shape:
+The existing response wrapper and execution names are retained. Example:
 
 ```json
 {
   "success": true,
+  "message": "Voice request processed",
   "data": {
-    "transcript": "Jarvis, main light on kar do",
+    "esp32DeviceId": "ESP32-001",
+    "transcript": "Jarvis, main light chalu karo",
     "execution": "processed",
     "reason": "command_queued",
     "reply": "Main Light on kar di.",
-    "serverMs": 740,
+    "commands": [
+      {
+        "commandId": "cmd_example",
+        "relayNumber": 2,
+        "action": "on",
+        "ttlRemainingMs": 12000
+      }
+    ],
+    "serverMs": 840,
     "timingsMs": {
-      "parseAudio": 1,
-      "db": 35,
-      "gemini": 520,
-      "execute": 80
+      "decode": 2,
+      "auth": 18,
+      "catalog": 25,
+      "gemini": 600,
+      "execute": 90,
+      "total": 840
     }
   }
 }
 ```
 
-Timing values above are illustrative, not measured performance guarantees. `serverMs` is the actual server-side elapsed time for the request. The relay changes physically only after the ESP32 polls the command queue, applies the relay output, and sends its ACK.
+Timing values above are illustrative, not measured. Actual values are logged per request; `serverMs` and `timingsMs.total` are measured elapsed server time. The response returns after the command claim; conversation writes and summary refresh are scheduled in `after()`.
 
 ## Test sequence
 
-1. Confirm the ESP32 sends the controller ID and Bearer token exactly as before.
-2. Upload “Jarvis, main light on kar do”. Confirm `execution: "processed"`, a queued response, and a pending command on the ESP32.
-3. Upload “main light on kar do” without the wake word. With the default configuration it must return HTTP 200, `execution: "ignored"`, and `reason: "wake_word_missing"`; no command should be queued.
-4. Test a quiet/distant command and a noisy clip containing no clear speech. The latter must be ignored rather than guessed.
-5. Test a generic ambiguous target when multiple matching devices exist. The response must be `needs_clarification`.
-6. Confirm the dashboard's reported state changes only after a successful hardware ACK.
+Run:
+
+```bash
+npm test
+npm run lint
+npm run build
+```
+
+Hardware acceptance sequence:
+
+1. “Jarvis, light chalu karo” → `processed` and at least one inline command; execute immediately without waiting for the next poll, then ACK as before.
+2. “Jarvis, hello kaise ho” then “Jarvis, mera pehla sawal kya tha” → second answer recalls the first question from the same session.
+3. Wait longer than 15 minutes, speak again → a new session begins.
+4. Cause an on/off ambiguity → `needs_clarification`, no command queued; reply “on” or “band kar do” within 30 seconds → pending target executes without wake word.
+5. Upload legacy PCM16 8 kHz WAV → accepted and converted.
+6. Test quiet/far mu-law audio and verify the transcript in Vercel logs.
 
 ## Troubleshooting
 
-- HTTP 401: controller ID/token mismatch or revoked token. Do not share the Bearer token.
+- HTTP 401: controller ID/token mismatch or revoked controller. Never share the Bearer token.
+- HTTP 400/415: verify RIFF/WAVE header, format tag, sample rate, channel count, bit depth, data chunk length, and `X-Audio-Codec`.
 - HTTP 413: clip exceeds 256 KB.
-- HTTP 415 / 400: verify `Content-Type: audio/wav`, RIFF/WAVE header, PCM16 mono format, and chunk lengths.
-- HTTP 429: respect the response message's `Retry after Ns` interval. The additional voice limit is 30 requests/minute per controller.
-- Empty or inaccurate transcript: check INMP441 wiring, mic placement, clipping, and firmware capture gain/normalization.
-- Command queued but no physical change: inspect pending-command polling, relay wiring/polarity, and ESP32 ACK logs.
+- HTTP 429: respect the existing rate-limit response and retry interval.
+- Incorrect on/off: inspect the logged transcript and decision; compare `GEMINI_VOICE_MODEL=gemini-2.5-flash-lite` against `gemini-2.5-flash` in Vercel.
+- Command queued but not executed: check inline `data.commands`, relay number, ACK logs, and then normal pending polling/lease expiry.
+- Slow requests: compare logged `auth`, `catalog`, `decode`, `gemini`, `execute`, and `total`. A sub-1.5-second total is a target, not a guaranteed SLA; Gemini network/model latency is outside the server's control.
 
 ## Privacy boundary
 
-Raw audio is processed in memory and sent to Gemini for understanding. Ignored audio is not written to assistant conversation memory. The wake word does not identify the speaker; controller authentication continues to identify the hardware, and actions remain scoped to the controller's linked Home.
+Audio is processed in memory and sent to Gemini for understanding. Ignored audio is not saved to voice conversation memory. Voice sessions are scoped to the authenticated controller, owner, and Home. The wake word does not identify the speaker.
