@@ -9,7 +9,6 @@ import { SMART_SCENES } from "@/lib/scenes/sceneDefinitions";
 import { authenticateEsp32Request } from "@/services/hardwareService";
 import { verifyHomeMembership } from "@/services/ai/homeContextService";
 
-export const runtime = "nodejs";
 export const maxDuration = 30;
 // Set this to the Atlas cluster's region. bom1 is appropriate for Mumbai Atlas clusters.
 export const preferredRegion = "bom1";
