@@ -402,7 +402,8 @@ export async function recordHeartbeat(
     expireStaleCommands({ esp32DeviceId: controller.esp32DeviceId, now }),
   ]);
 
-  invalidateVoiceCatalog(String(controller.homeId));\n  const pendingCommandCount = await Command.countDocuments({
+  invalidateVoiceCatalog(String(controller.homeId));
+  const pendingCommandCount = await Command.countDocuments({
     esp32DeviceId: controller.esp32DeviceId,
     status: "pending",
     expiresAt: { $gt: now },
