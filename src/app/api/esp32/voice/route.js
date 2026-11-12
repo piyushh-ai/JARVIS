@@ -156,11 +156,11 @@ async function callGroq({ audio, catalog, session, deadline }) {
       clarification: null,
       clarificationTarget: null,
       reply: "",
-      model: process.env.GROQ_VOICE_MODEL?.trim() || "llama-3.3-70b-versatile",
+      model: process.env.GROQ_VOICE_MODEL?.trim() || "qwen/qwen3.8-27b",
     };
   }
 
-  const model = process.env.GROQ_VOICE_MODEL?.trim() || "llama-3.3-70b-versatile";
+  const model = process.env.GROQ_VOICE_MODEL?.trim() || "qwen/qwen3.8-27b";
   const remaining = deadline - Date.now();
   if (remaining <= 0) throw new ServiceError("Voice analysis timed out. Please retry.", 504);
 
@@ -238,7 +238,7 @@ async function callGroq({ audio, catalog, session, deadline }) {
 async function summarizeWithGroq(previousSummary, olderText) {
   const apiKey = process.env.GROQ_API_KEY?.trim();
   if (!apiKey) return previousSummary;
-  const model = process.env.GROQ_VOICE_MODEL?.trim() || "llama-3.3-70b-versatile";
+  const model = process.env.GROQ_VOICE_MODEL?.trim() || "qwen/qwen3.8-27b";
   try {
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
