@@ -82,14 +82,14 @@ export function parseAndPrepareVoiceWav(buffer, codecHeader = "") {
     if (id === "data") { dataOffset = start; dataSize = size; }
     offset = end + (size & 1);
   }
-  if (!format || dataOffset < 0 || dataSize <= 0 || dataOffset + dataSize !== buffer.length) {
+  if (!format || dataOffset < 0 || dataSize <= 0 || dataOffset + dataSize + (dataSize & 1) !== buffer.length) {
     throw new ServiceError("WAV data chunk is missing or does not match payload", 400);
   }
   if (format.channels !== 1) throw new ServiceError("WAV must be mono", 415);
 
   let pcm;
   if (format.encoding === 7 && format.bits === 8 && format.sampleRate === 16000 && format.fmtLength === 16) {
-    if (codecHeader && codecHeader.toLowerCase() !== "mulaw") throw new ServiceError("X-Audio-Codec must be mulaw for G.711 audio", 415);
+    if (codecHeader.toLowerCase() !== "mulaw") throw new ServiceError("X-Audio-Codec must be mulaw for G.711 audio", 415);
     const decoded = new Int16Array(dataSize);
     for (let i = 0; i < dataSize; i++) decoded[i] = decodeMuLawSample(buffer[dataOffset + i]);
     pcm = normalizePcm16(decoded);
