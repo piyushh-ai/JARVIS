@@ -130,6 +130,7 @@ function buildPrompt(catalog) {
     "Audio is 8 kHz mono PCM16 WAV. It may be quiet, distant, or noisy. The speaker uses Hinglish, Hindi, or English.",
     "Use only exact device, room, and scene names/IDs from the supplied home catalog to resolve speech.",
     "Ignore TV and background speech. If speech is unclear or only noise, return transcript='', kind='none', wakeWordHeard=false, actions=[]. Never invent a command from noise.",
+    `Configured wake word: ${process.env.ESP32_VOICE_WAKE_WORD?.trim() || "jarvis"}.`,
     "Recognize wake-word pronunciations/mishearings: jarvis, jarvish, jarwis, jarvas, javis, jarviss, and जार्विस.",
     "wakeWordHeard is true only when the speaker addresses JARVIS in this clip. Do not infer it merely because a device name or command is spoken.",
     "kind='command' for clear on/off device or scene requests; kind='question' for information/status questions; kind='none' for no clear speech or unrelated/background speech.",
