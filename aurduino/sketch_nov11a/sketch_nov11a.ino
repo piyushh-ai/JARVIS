@@ -54,7 +54,7 @@ const char* SERVER_BASE =
 
 const char* DEVICE_ID = "ESP32-001";
 
-const char* FIRMWARE_VERSION = "1.2.0";
+const char* FIRMWARE_VERSION = "1.3.0";
 
 // ============================================================
 // 3. RELAY CONFIGURATION
@@ -84,20 +84,19 @@ bool relayStates[RELAY_COUNT] = {
 // SCK/BCLK -> GPIO26, WS/LRCLK -> GPIO25
 // SD/DOUT -> GPIO33, L/R -> GND (LEFT channel)
 //
-// This firmware captures short PCM audio and uploads WAV to
-// POST /api/esp32/voice. The endpoint returns a transcript only;
-// it does not execute assistant tools or relay commands.
+// This firmware captures 8 kHz mono PCM16 WAV and uploads it to
+// POST /api/esp32/voice. Assistant execution requires a spoken PIN.
 constexpr i2s_port_t MIC_I2S_PORT = I2S_NUM_0;
 constexpr int MIC_BCLK_PIN = 26;
 constexpr int MIC_WS_PIN = 25;
 constexpr int MIC_DATA_PIN = 33;
-constexpr uint32_t MIC_SAMPLE_RATE = 16000;
+constexpr uint32_t MIC_SAMPLE_RATE = 8000;
 constexpr size_t MIC_BUFFER_SAMPLES = 256;
 constexpr uint32_t MIC_REPORT_INTERVAL_MS = 500;
-constexpr uint32_t MIC_VOICE_THRESHOLD = 180; // Tune from Serial RMS readings
+constexpr uint32_t MIC_VOICE_THRESHOLD = 260; // Tune from Serial RMS readings
 constexpr uint32_t MIC_RECORD_SECONDS = 3;
 constexpr size_t MIC_RECORD_SAMPLES = MIC_SAMPLE_RATE * MIC_RECORD_SECONDS;
-constexpr uint32_t MIC_UPLOAD_COOLDOWN_MS = 10000;
+constexpr uint32_t MIC_UPLOAD_COOLDOWN_MS = 30000;
 
 int32_t micRawBuffer[MIC_BUFFER_SAMPLES];
 uint8_t micWavBuffer[44 + MIC_RECORD_SAMPLES * 2];
@@ -306,7 +305,7 @@ bool initializeMicrophone() {
   }
 
   i2s_zero_dma_buffer(MIC_I2S_PORT);
-  Serial.println("[MIC] INMP441 initialized (16kHz, 32-bit, LEFT)");
+  Serial.println("[MIC] INMP441 initialized (8kHz, 32-bit, LEFT)");
   return true;
 }
 
@@ -463,11 +462,24 @@ bool captureAndUploadVoice() {
     DeserializationError error = deserializeJson(doc, response);
     if (!error && doc["success"] == true) {
       const char* transcript = doc["data"]["transcript"] | "";
+      const char* execution = doc["data"]["execution"] | "not_executed";
+      const char* reason = doc["data"]["reason"] | "";
+      const char* reply = doc["data"]["reply"] | "";
       if (transcript[0] != '\0') {
         Serial.print("[VOICE] Transcript: ");
         Serial.println(transcript);
       } else {
         Serial.println("[VOICE] No intelligible speech detected");
+      }
+      Serial.print("[VOICE] Execution: ");
+      Serial.println(execution);
+      if (reason[0] != '\0') {
+        Serial.print("[VOICE] Reason: ");
+        Serial.println(reason);
+      }
+      if (reply[0] != '\0') {
+        Serial.print("[JARVIS] ");
+        Serial.println(reply);
       }
     } else {
       Serial.println("[VOICE] Could not parse transcription response");

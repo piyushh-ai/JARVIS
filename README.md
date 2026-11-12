@@ -333,6 +333,17 @@ A reusable client API layer connects future UI views to the Next.js Route Handle
    - **LLM Provider Requirement:** Without a configured API key on the server, `/api/assistant/chat` fails closed with HTTP `503` (never returns fabricated responses).
    - **Browser Speech API Support:** Microphone STT (`SpeechRecognition` / `webkitSpeechRecognition`) works on Chromium-based browsers (Chrome/Edge) and requires microphone permission + HTTPS (or localhost); Firefox and some embedded WebViews disable the microphone button cleanly with guidance. Spoken `speechSynthesis` voice availability depends on OS/browser installed voices.
 
+
+### ESP32 microphone voice control (INMP441)
+
+The ESP32 microphone path uses the same controller token and Home-scoped assistant services as dashboard commands. Configure `ESP32_VOICE_PIN` as a server-only 6–8 digit secret in Vercel before enabling spoken relay commands. Speak: **“Jarvis, PIN 123456, main light on kar do.”** Replace the example digits with your configured PIN. The PIN phrase is stripped before the command enters conversation memory and is redacted from the ESP32 response.
+
+This is a prototype second factor, not speaker biometrics. Voice commands are attributed to the controller's registered Home owner. Anyone who knows or overhears the PIN may use it; do not use it for locks, alarms, or safety-critical devices. Gemini receives the spoken PIN as part of the audio transcription request. Without `ESP32_VOICE_PIN`, the route remains transcript-only.
+
+**Current mic capture:** INMP441, 8 kHz mono PCM16 WAV, 3-second clip, provisional RMS trigger, 30-second firmware cooldown. This is not a real wake-word/VAD system and may miss the first syllable. The existing relay pins and HTTPS/NVS/ACK flow are preserved. Amplifier/speaker playback is not included; assistant replies are printed to Serial Monitor and returned as API data.
+
+See [ESP32 Voice Control](docs/ESP32_VOICE.md) and the [Final Phase-1 Test Plan](docs/FINAL_TEST_PLAN.md).
+
 ## Available Scripts
 
 - `npm run dev` — Start the Next.js development server
