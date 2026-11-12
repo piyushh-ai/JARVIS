@@ -307,7 +307,7 @@ export async function POST(request) {
 
     if (!transcript || parsed.kind === "none") {
       return responseData(controller, {
-        transcript, execution: "ignored", reason: "not_understood", reply: "", timingsMs,
+        transcript, execution: "not_executed", reason: "not_understood", reply: "", timingsMs,
       }, startedAt);
     }
     if (wakeRequired && !wakeWordHeard) {
