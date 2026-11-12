@@ -21,8 +21,8 @@ function wav({ encoding = 7, sampleRate = 16000, bits = 8, samples = Buffer.from
 }
 
 test("G.711 mu-law decoder maps silence and full-scale codes", () => {
-  assert.equal(decodeMuLawSample(0xff), 0);
-  assert.equal(decodeMuLawSample(0x7f), 0);
+  assert.equal(Math.abs(decodeMuLawSample(0xff)), 0);
+  assert.equal(Math.abs(decodeMuLawSample(0x7f)), 0);
   assert.ok(decodeMuLawSample(0x00) < -30000);
   assert.ok(decodeMuLawSample(0x80) > 30000);
 });
