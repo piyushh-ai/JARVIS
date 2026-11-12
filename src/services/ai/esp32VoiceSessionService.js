@@ -22,7 +22,7 @@ export async function loadEsp32VoiceSession({ userId, homeId, controllerId, now 
   const messages = Array.isArray(session.messages) ? session.messages : [];
   const pinned = session.pinnedMessages?.length ? session.pinnedMessages : messages.slice(0, 4);
   const recent = messages.slice(-12);
-  const merged = [...pinned, ...recent.filter((m) => !pinned.includes(m))];
+  const pinnedKeys = new Set(pinned.map((m) => `${m.role}:${new Date(m.createdAt).getTime()}:${m.content}`));\n  const merged = [...pinned, ...recent.filter((m) => !pinnedKeys.has(`${m.role}:${new Date(m.createdAt).getTime()}:${m.content}`))];
   return {
     conversation: session,
     context: merged.map((m) => ({ role: m.role, content: m.content })),
