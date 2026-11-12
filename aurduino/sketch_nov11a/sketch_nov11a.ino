@@ -382,6 +382,20 @@ void processMicrophone() {
   }
 }
 
+// Dedicated microphone task: keeps I2S sampling independent from the
+// main loop's HTTPS polling/heartbeat requests. Voice upload runs here
+// with its own HTTP/TLS client so it cannot race the main HTTP client.
+void microphoneTask(void* parameter) {
+  (void)parameter;
+  Serial.println("[MIC] Continuous microphone task started");
+  for (;;) {
+    if (micReady) {
+      processMicrophone();
+    }
+    vTaskDelay(pdMS_TO_TICKS(2));
+  }
+}
+
 // ============================================================
 // 9B. WAV ENCODING + GEMINI TRANSCRIPTION UPLOAD
 // ============================================================
@@ -471,26 +485,31 @@ bool captureAndUploadVoice() {
   writeWavHeader(micWavBuffer, targetBytes);
 
   String url = String(SERVER_BASE) + "/api/esp32/voice";
-  http.setReuse(false);
-  http.setTimeout(25000);
-  http.setConnectTimeout(8000);
+  WiFiClientSecure voiceSecureClient;
+  HTTPClient voiceHttp;
+  voiceSecureClient.setCACert(ROOT_CA);
+  voiceSecureClient.setTimeout(25000);
+  voiceSecureClient.setHandshakeTimeout(10);
+  voiceHttp.setReuse(false);
+  voiceHttp.setTimeout(25000);
+  voiceHttp.setConnectTimeout(8000);
 
-  if (!http.begin(secureClient, url)) {
+  if (!voiceHttp.begin(voiceSecureClient, url)) {
     Serial.println("[VOICE] HTTPS begin failed");
     micUploadInProgress = false;
     return false;
   }
 
-  http.addHeader("X-Device-Id", DEVICE_ID);
-  http.addHeader("Authorization", String("Bearer ") + deviceToken);
-  http.addHeader("Content-Type", "audio/wav");
-  http.addHeader("Accept", "application/json");
+  voiceHttp.addHeader("X-Device-Id", DEVICE_ID);
+  voiceHttp.addHeader("Authorization", String("Bearer ") + deviceToken);
+  voiceHttp.addHeader("Content-Type", "audio/wav");
+  voiceHttp.addHeader("Accept", "application/json");
 
   Serial.printf("[VOICE] Uploading WAV: %u bytes\n",
                 (unsigned)(44 + targetBytes));
-  int code = http.POST(micWavBuffer, 44 + targetBytes);
-  String response = code > 0 ? http.getString() : "";
-  http.end();
+  int code = voiceHttp.POST(micWavBuffer, 44 + targetBytes);
+  String response = code > 0 ? voiceHttp.getString() : "";
+  voiceHttp.end();
 
   Serial.printf("[VOICE] HTTP status: %d\n", code);
 
@@ -1403,6 +1422,26 @@ void setup() {
     return;
   }
 
+  // Start continuous I2S sampling on the application core. The main loop
+  // remains free for relay polling, heartbeat and Wi-Fi maintenance.
+  if (micReady) {
+    BaseType_t taskCreated = xTaskCreatePinnedToCore(
+      microphoneTask,
+      "JarvisMic",
+      8192,
+      nullptr,
+      2,
+      nullptr,
+      1
+    );
+    if (taskCreated == pdPASS) {
+      Serial.println("[MIC] Continuous task created on core 1");
+    } else {
+      micReady = false;
+      Serial.println("[MIC] ERROR: Could not create microphone task");
+    }
+  }
+
   // Check server.
 
   httpsReady = testHttpsHealth();
@@ -1432,8 +1471,8 @@ void setup() {
 
 void loop() {
 
-  // Keep sampling the INMP441 even if Wi-Fi/server is offline.
-  processMicrophone();
+  // Microphone sampling is handled by the dedicated FreeRTOS task.
+  // Keep the main loop focused on network and relay command handling.
 
   // ----------------------------------------------------------
   // WIFI
