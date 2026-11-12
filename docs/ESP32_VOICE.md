@@ -4,7 +4,7 @@
 
 The ESP32 uploads raw 8 kHz mono PCM16 WAV clips to the authenticated voice endpoint. Clips may be 0.5–4 seconds and up to 256 KB. Gemini receives the audio once and returns structured JSON containing the transcript, wake-word decision, intent, and catalog-resolved actions. Device commands go directly through JARVIS's existing Home-scoped command queue; informational questions use the existing assistant service.
 
-There is no spoken PIN. The wake word is an attention gate, not speaker authentication or proof of identity. The ESP32 controller token authenticates the hardware and voice actions are attributed to the controller's registered Home owner. Do not use voice control for locks, alarms, or safety-critical actuators.
+The wake word is an attention gate, not speaker authentication or proof of identity. The ESP32 controller token authenticates the hardware and voice actions are attributed to the controller's registered Home owner. Do not use voice control for locks, alarms, or safety-critical actuators.
 
 ## Environment variables
 
@@ -16,7 +16,7 @@ Configure these server-only variables in Vercel Project Settings → Environment
 - `GEMINI_VOICE_MODEL` — optional primary model override; defaults to `gemini-2.5-flash-lite`.
 - `GEMINI_VOICE_FALLBACK_MODEL` — optional Gemini-only fallback; defaults to `gemini-2.5-flash`.
 
-Remove the obsolete voice PIN variable from Vercel. No PIN is spoken, parsed, stored, or sent to Gemini.
+
 
 ## Audio request
 
