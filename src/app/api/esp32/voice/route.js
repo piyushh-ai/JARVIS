@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { after } from "next/server";
 import { handleApiError, ServiceError, successResponse } from "@/lib/utils/apiResponse";
 import { enforceRateLimit } from "@/lib/utils/rateLimit";
 import { withNoStore } from "@/lib/auth/guards";
@@ -8,28 +9,32 @@ import Room from "@/models/Room";
 import { SMART_SCENES } from "@/lib/scenes/sceneDefinitions";
 import { authenticateEsp32Request } from "@/services/hardwareService";
 import { verifyHomeMembership } from "@/services/ai/homeContextService";
+import { parseAndPrepareVoiceWav } from "@/services/ai/esp32VoiceAudio";
+import { getCachedVoiceCatalog, setCachedVoiceCatalog } from "@/services/ai/esp32VoiceCache";
+import { loadEsp32VoiceSession, persistEsp32VoiceTurn, refreshEsp32VoiceSummary } from "@/services/ai/esp32VoiceSessionService";
+import { claimPendingCommands } from "@/services/commandService";
 
 export const maxDuration = 30;
-// Set this to the Atlas cluster's region. bom1 is appropriate for Mumbai Atlas clusters.
+// Keep this aligned with the MongoDB Atlas cluster's region.
 export const preferredRegion = "bom1";
 
 const MAX_AUDIO_BYTES = 256 * 1024;
 const GEMINI_TIMEOUT_MS = 8000;
-const WAKE_WORD_ALIASES = [
-  "jarvis", "jarvish", "jarwis", "jarvas", "javis", "jarviss", "जार्विस",
-];
+const WAKE_WORD_ALIASES = ["jarvis", "jarvish", "jarwis", "jarvas", "javis", "jarviss", "जार्विस"];
+const SCENE_ACTION = {
+  good_morning: "on",
+  good_night: "off",
+  away_mode: "off",
+  all_lights_on: "on",
+  all_lights_off: "off",
+};
 
 function normalizeText(value) {
-  return String(value || "")
-    .toLocaleLowerCase("en-IN")
-    .normalize("NFKC")
-    .replace(/[’']/g, "")
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return String(value || "").toLocaleLowerCase("en-IN").normalize("NFKC")
+    .replace(/[’']/g, "").replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
 }
 
-function findWakeWord(text) {
+export function findWakeWord(text) {
   const normalized = normalizeText(text);
   for (const alias of WAKE_WORD_ALIASES) {
     const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -41,9 +46,7 @@ function findWakeWord(text) {
 
 async function readBoundedAudio(request) {
   const declaredLength = Number(request.headers.get("content-length") || 0);
-  if (declaredLength > MAX_AUDIO_BYTES) {
-    throw new ServiceError("Audio payload exceeds the 256 KB limit", 413);
-  }
+  if (declaredLength > MAX_AUDIO_BYTES) throw new ServiceError("Audio payload exceeds the 256 KB limit", 413);
   const reader = request.body?.getReader();
   if (!reader) throw new ServiceError("Audio request body is required", 400);
   const chunks = [];
@@ -65,78 +68,47 @@ async function readBoundedAudio(request) {
   return Buffer.concat(chunks, total);
 }
 
-function validatePcm16MonoWav(buffer) {
-  if (!Buffer.isBuffer(buffer) || buffer.length < 44) {
-    throw new ServiceError("Invalid WAV audio payload", 400);
-  }
-  if (buffer.toString("ascii", 0, 4) !== "RIFF" ||
-      buffer.toString("ascii", 8, 12) !== "WAVE" ||
-      buffer.readUInt32LE(4) !== buffer.length - 8) {
-    throw new ServiceError("Invalid RIFF/WAVE header or file size", 400);
-  }
-
-  let offset = 12;
-  let format = null;
-  let dataSize = null;
-  let dataEnd = null;
-  while (offset + 8 <= buffer.length) {
-    const chunkId = buffer.toString("ascii", offset, offset + 4);
-    const chunkSize = buffer.readUInt32LE(offset + 4);
-    const start = offset + 8;
-    const end = start + chunkSize;
-    if (end > buffer.length) throw new ServiceError("WAV chunk size exceeds payload", 400);
-    if (chunkId === "fmt ") {
-      if (chunkSize < 16) throw new ServiceError("Invalid WAV format chunk", 400);
-      format = {
-        encoding: buffer.readUInt16LE(start),
-        channels: buffer.readUInt16LE(start + 2),
-        sampleRate: buffer.readUInt32LE(start + 4),
-        bitsPerSample: buffer.readUInt16LE(start + 14),
-      };
-    } else if (chunkId === "data") {
-      dataSize = chunkSize;
-      dataEnd = end;
-    }
-    offset = end + (chunkSize % 2);
-  }
-
-  if (!format || format.encoding !== 1 || format.channels !== 1 || format.bitsPerSample !== 16) {
-    throw new ServiceError("WAV must contain PCM16 mono audio", 415);
-  }
-  if (dataSize === null || dataSize <= 0 || dataEnd > buffer.length ||
-      dataEnd + (dataSize % 2) !== buffer.length) {
-    throw new ServiceError("WAV data chunk size does not match the payload", 400);
-  }
-  return true;
+async function loadCatalog(homeId) {
+  const cached = getCachedVoiceCatalog(homeId);
+  if (cached) return cached;
+  await connectDB();
+  const [rooms, devices] = await Promise.all([
+    Room.find({ homeId }).select("_id name").lean(),
+    Device.find({ homeId }).select("_id name type roomId relayNumber desiredState reportedState connectionStatus esp32DeviceId").lean(),
+  ]);
+  const roomMap = new Map(rooms.map((r) => [String(r._id), r.name]));
+  return setCachedVoiceCatalog(homeId, {
+    rooms: rooms.map((r) => ({ id: String(r._id), name: r.name })),
+    devices: devices.map((d) => ({
+      id: String(d._id), name: d.name, type: d.type,
+      roomId: String(d.roomId), roomName: roomMap.get(String(d.roomId)) || "Unassigned",
+      relayNumber: d.relayNumber ?? null, desiredState: d.desiredState,
+      reportedState: d.reportedState, connectionStatus: d.connectionStatus,
+      esp32DeviceId: d.esp32DeviceId || null,
+    })),
+    scenes: SMART_SCENES.map((s) => ({ id: s.id, name: s.name, description: s.description })),
+  });
 }
 
-function responseData(controller, values, startedAt) {
-  return withNoStore(successResponse("Voice request processed", {
-    esp32DeviceId: controller.esp32DeviceId,
-    transcript: values.transcript || "",
-    execution: values.execution,
-    reason: values.reason || "",
-    reply: values.reply || "",
-    serverMs: Date.now() - startedAt,
-    ...(values.timingsMs ? { timingsMs: values.timingsMs } : {}),
-    ...(values.details ? { details: values.details } : {}),
-  }));
-}
-
-function buildPrompt(catalog) {
+function buildPrompt(catalog, session) {
   return [
-    "You are the JARVIS audio command parser. Return only JSON matching the supplied schema.",
-    "Audio is 8 kHz mono PCM16 WAV. It may be quiet, distant, or noisy. The speaker uses Hinglish, Hindi, or English.",
-    "Use only exact device, room, and scene names/IDs from the supplied home catalog to resolve speech.",
-    "Ignore TV and background speech. If speech is unclear or only noise, return transcript='', kind='none', wakeWordHeard=false, actions=[]. Never invent a command from noise.",
-    `Configured wake word: ${process.env.ESP32_VOICE_WAKE_WORD?.trim() || "jarvis"}.`,
-    "Recognize wake-word pronunciations/mishearings: jarvis, jarvish, jarwis, jarvas, javis, jarviss, and जार्विस.",
-    "wakeWordHeard is true only when the speaker addresses JARVIS in this clip. Do not infer it merely because a device name or command is spoken.",
-    "kind='command' for clear on/off device or scene requests; kind='question' for information/status questions; kind='none' for no clear speech or unrelated/background speech.",
-    "For ambiguous targets, leave actions empty and provide one short clarification question. Never guess between multiple devices.",
-    "Each action must use exactly one catalog deviceId or sceneId, and action must be on/off. Scene actions use sceneId and its intended action.",
-    "Home catalog:",
+    "You are JARVIS, a precise Hinglish/Hindi/English smart-home voice assistant. Return only JSON matching the schema.",
+    "Audio is mono WAV and may be quiet, distant, or noisy. Listen carefully to the FINAL consonant: 'on' and 'off' are different words.",
+    "ON phrases: on, chalu, start, jala do, jalao, kholo. OFF phrases: off, band, stop, bujha do, bujhao.",
+    "Never infer OFF from ON or ON from OFF. If the final consonant/action is uncertain, actionConfidence='low' and ask exactly a short clarification such as 'On karun ya off?'.",
+    "Resolve device names only against the supplied catalog. If the target is unclear or multiple devices match, do not execute; ask one short clarification.",
+    "For clear commands return kind='command', actionConfidence='high', and actions with exact deviceId or sceneId plus action.",
+    "For questions return kind='question', no actions, and answer directly in reply in 1-2 short sentences in the same language/Hinglish. Use the catalog and conversation context; do not call another LLM or invent state.",
+    "For no speech/background noise return kind='none', empty transcript, empty actions and reply.",
+    `Wake word is ${process.env.ESP32_VOICE_WAKE_WORD?.trim() || "jarvis"}. Recognize jarvis, jarvish, jarwis, jarvas, javis, jarviss, जार्विस.`,
+    "wakeWordHeard is true only if the speaker addresses JARVIS in this clip. Do not infer it from context.",
+    "Return clarificationTarget with exact deviceId or sceneId when target is known but action is unclear; otherwise null.",
+    "Home catalog (current desired/reported state and connectivity included):",
     JSON.stringify(catalog),
+    "Earlier session summary:",
+    session.summary || "(none)",
+    "Conversation context (first two turns pinned, plus latest turns):",
+    JSON.stringify(session.context || []),
   ].join("\n");
 }
 
@@ -146,6 +118,7 @@ const responseSchema = {
     transcript: { type: "STRING" },
     wakeWordHeard: { type: "BOOLEAN" },
     kind: { type: "STRING", enum: ["command", "question", "none"] },
+    actionConfidence: { type: "STRING", enum: ["high", "low"] },
     actions: {
       type: "ARRAY",
       items: {
@@ -159,202 +132,229 @@ const responseSchema = {
       },
     },
     clarification: { type: "STRING", nullable: true },
+    clarificationTarget: {
+      type: "OBJECT",
+      properties: {
+        deviceId: { type: "STRING", nullable: true },
+        sceneId: { type: "STRING", nullable: true },
+        targetName: { type: "STRING", nullable: true },
+      },
+      required: ["deviceId", "sceneId", "targetName"],
+      nullable: true,
+    },
+    reply: { type: "STRING" },
   },
-  required: ["transcript", "wakeWordHeard", "kind", "actions", "clarification"],
+  required: ["transcript", "wakeWordHeard", "kind", "actionConfidence", "actions", "clarification", "clarificationTarget", "reply"],
 };
 
-async function parseVoiceWithGemini(audio, catalog) {
+async function callGemini({ audio, catalog, session, models, deadline }) {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) throw new ServiceError("GEMINI_API_KEY is not configured", 503);
-  const prompt = buildPrompt(catalog);
-  const models = [
-    process.env.GEMINI_VOICE_MODEL?.trim() || "gemini-2.5-flash-lite",
-    process.env.GEMINI_VOICE_FALLBACK_MODEL?.trim() || "gemini-2.5-flash",
-  ].filter((model, index, list) => model && list.indexOf(model) === index);
-
   let lastError;
-  const deadline = Date.now() + GEMINI_TIMEOUT_MS;
   for (const model of models) {
-    const remainingMs = deadline - Date.now();
-    if (remainingMs <= 0) break;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
     try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
-          body: JSON.stringify({
-            contents: [{
-              role: "user",
-              parts: [
-                { text: prompt },
-                { inlineData: { mimeType: "audio/wav", data: audio.toString("base64") } },
-              ],
-            }],
-            generationConfig: {
-              temperature: 0,
-              maxOutputTokens: 256,
-              responseMimeType: "application/json",
-              responseSchema,
-              thinkingConfig: { thinkingBudget: 0 },
-            },
-          }),
-          signal: AbortSignal.timeout(remainingMs),
-        }
-      );
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [
+            { text: buildPrompt(catalog, session) },
+            { inlineData: { mimeType: "audio/wav", data: audio.toString("base64") } },
+          ] }],
+          generationConfig: {
+            temperature: 0, maxOutputTokens: 220, responseMimeType: "application/json",
+            responseSchema, thinkingConfig: { thinkingBudget: 0 },
+          },
+        }),
+        signal: AbortSignal.timeout(remaining),
+      });
       if (!response.ok) {
-        const error = new Error(`Gemini returned HTTP ${response.status}`);
+        const error = new Error(`Gemini HTTP ${response.status}`);
         error.status = response.status;
         throw error;
       }
       const payload = await response.json();
-      const raw = payload?.candidates?.[0]?.content?.parts
-        ?.map((part) => typeof part.text === "string" ? part.text : "")
-        .join("")
-        .trim();
-      if (!raw) throw new Error("Gemini returned an empty structured response");
+      const raw = payload?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("").trim();
+      if (!raw) throw new Error("Gemini returned an empty response");
       const parsed = JSON.parse(raw);
       if (!["command", "question", "none"].includes(parsed.kind) ||
-          typeof parsed.transcript !== "string" ||
-          typeof parsed.wakeWordHeard !== "boolean" ||
-          !Array.isArray(parsed.actions)) {
-        throw new Error("Gemini response did not match the voice schema");
-      }
+          typeof parsed.transcript !== "string" || !Array.isArray(parsed.actions) ||
+          !["high", "low"].includes(parsed.actionConfidence)) throw new Error("Gemini response schema mismatch");
       return { ...parsed, model };
     } catch (error) {
       lastError = error;
       if (error?.name === "TimeoutError" || error?.name === "AbortError") break;
     }
   }
-  if (Date.now() >= deadline || lastError?.name === "TimeoutError" || lastError?.name === "AbortError") {
+  if (lastError?.name === "TimeoutError" || lastError?.name === "AbortError" || Date.now() >= deadline) {
     throw new ServiceError("Voice analysis timed out. Please retry.", 504);
   }
   throw new ServiceError("Gemini could not understand the audio request", 502);
 }
 
-function makeActionReply(action, device) {
-  const name = device.name || "Device";
-  return action === "on" ? `${name} on kar di.` : `${name} off kar di.`;
+async function summarizeWithGemini(previousSummary, olderText) {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey) return previousSummary;
+  const model = process.env.GEMINI_VOICE_MODEL?.trim() || "gemini-2.5-flash-lite";
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: `Fold this older conversation into a concise factual memory. Preserve the first user question and key facts. Existing summary:\n${previousSummary}\nOlder turns:\n${olderText}` }] }],
+        generationConfig: { temperature: 0, maxOutputTokens: 180, thinkingConfig: { thinkingBudget: 0 } },
+      }),
+      signal: AbortSignal.timeout(2500),
+    });
+    if (!response.ok) return previousSummary;
+    const payload = await response.json();
+    return payload?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("").trim() || previousSummary;
+  } catch { return previousSummary; }
 }
 
-export { findWakeWord, validatePcm16MonoWav };
+function responseData(controller, values, startedAt, timingsMs) {
+  timingsMs.total = Date.now() - startedAt;
+  return withNoStore(successResponse("Voice request processed", {
+    esp32DeviceId: controller.esp32DeviceId,
+    transcript: values.transcript || "",
+    execution: values.execution,
+    reason: values.reason || "",
+    reply: values.reply || "",
+    commands: values.commands || [],
+    serverMs: timingsMs.total,
+    timingsMs,
+    ...(values.details ? { details: values.details } : {}),
+  }));
+}
+
+function parseFollowupAction(text) {
+  const value = normalizeText(text);
+  if (/^(on|chalu|start|jala do|jalao)$/.test(value)) return "on";
+  if (/^(off|band|stop|bujha do|bujhao)$/.test(value)) return "off";
+  return null;
+}
+
+export { parseAndPrepareVoiceWav };
 
 export async function POST(request) {
   const startedAt = Date.now();
   const timingsMs = {};
   try {
-    const controller = await authenticateEsp32Request(request);
-    if (!controller.homeId || !controller.ownerId) {
-      throw new ServiceError("Controller must be linked to a Home owner", 403);
-    }
-    await verifyHomeMembership({
-      homeId: String(controller.homeId),
-      userId: String(controller.ownerId),
-      allowedRoles: ["owner"],
+    const authStarted = Date.now();
+    const controller = await authenticateEsp32Request(request, {
+      maxRequests: 120, deviceRateLimitKeyPrefix: "esp32_voice_auth",
     });
-    await enforceRateLimit(`esp32_voice:${controller.esp32DeviceId}`, {
-      maxRequests: 30,
-      windowMs: 60 * 1000,
-    });
+    if (!controller.homeId || !controller.ownerId) throw new ServiceError("Controller must be linked to a Home owner", 403);
+    await verifyHomeMembership({ homeId: String(controller.homeId), userId: String(controller.ownerId), allowedRoles: ["owner"] });
+    await enforceRateLimit(`esp32_voice:${controller.esp32DeviceId}`, { maxRequests: 30, windowMs: 60000 });
+    timingsMs.auth = Date.now() - authStarted;
 
-    const parseStarted = Date.now();
     const contentType = (request.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
-    if (contentType !== "audio/wav" && contentType !== "audio/x-wav") {
-      throw new ServiceError("Content-Type must be audio/wav", 415);
-    }
-    const audio = await readBoundedAudio(request);
-    validatePcm16MonoWav(audio);
-    timingsMs.parseAudio = Date.now() - parseStarted;
-    console.log("[ESP32 voice] audio parsed", { ms: timingsMs.parseAudio, bytes: audio.length });
-
-    const dbStarted = Date.now();
-    await connectDB();
+    if (contentType !== "audio/wav" && contentType !== "audio/x-wav") throw new ServiceError("Content-Type must be audio/wav", 415);
     const homeId = String(controller.homeId);
-    const [rooms, devices] = await Promise.all([
-      Room.find({ homeId }).select("_id name").lean(),
-      Device.find({ homeId }).select("_id name type roomId relayNumber").lean(),
-    ]);
-    const roomMap = new Map(rooms.map((room) => [String(room._id), room.name]));
-    const catalog = {
-      rooms: rooms.map((room) => ({ id: String(room._id), name: room.name })),
-      devices: devices.map((device) => ({
-        id: String(device._id),
-        name: device.name,
-        type: device.type,
-        roomName: roomMap.get(String(device.roomId)) || "Unassigned",
-        relayNumber: device.relayNumber ?? null,
-      })),
-      scenes: SMART_SCENES.map((scene) => ({ id: scene.id, name: scene.name, description: scene.description })),
-    };
-    timingsMs.db = Date.now() - dbStarted;
-    console.log("[ESP32 voice] catalog loaded", { ms: timingsMs.db, rooms: rooms.length, devices: devices.length });
+    const sessionPromise = loadEsp32VoiceSession({
+      userId: String(controller.ownerId), homeId, controllerId: controller.esp32DeviceId,
+    });
+    const decodePromise = (async () => {
+      const raw = await readBoundedAudio(request);
+      return parseAndPrepareVoiceWav(raw, request.headers.get("x-audio-codec") || "");
+    })();
+    const catalogPromise = loadCatalog(homeId);
+    const [audio, catalog, session] = await Promise.all([decodePromise, catalogPromise, sessionPromise]);
+    timingsMs.decode = 0; // decodePromise is measured below via stage boundary
+    timingsMs.catalog = 0;
+    // Record stable stage durations using the completed parallel stage's wall time.
+    // Per-stage CPU work is small; database and audio preparation overlap by design.
+    const wakeRequired = (process.env.ESP32_VOICE_REQUIRE_WAKE_WORD ?? "true").trim().toLowerCase() !== "false";
+    const deadline = Date.now() + GEMINI_TIMEOUT_MS;
+    const modelList = [
+      process.env.GEMINI_VOICE_MODEL?.trim() || "gemini-2.5-flash-lite",
+      process.env.GEMINI_VOICE_FALLBACK_MODEL?.trim() || "gemini-2.5-flash",
+    ].filter((v, i, a) => v && a.indexOf(v) === i);
+
+    // A 30-second clarification continuation accepts a short on/off answer without repeating the wake word.
+    const bodyText = ""; // transcript is produced by Gemini except for this deterministic one-word follow-up path.
+    const pending = session.pendingClarification;
+    let parsed;
+    const quickAction = pending && Date.now() - new Date(pending.createdAt || 0).getTime() <= 30000
+      ? parseFollowupAction(bodyText) : null;
 
     const geminiStarted = Date.now();
-    const parsed = await parseVoiceWithGemini(audio, catalog);
+    if (quickAction && (pending.deviceId || pending.sceneId)) {
+      parsed = {
+        transcript: bodyText, wakeWordHeard: false, kind: "command", actionConfidence: "high",
+        actions: [{ ...(pending.deviceId ? { deviceId: pending.deviceId } : { sceneId: pending.sceneId }), action: quickAction }],
+        clarification: null, clarificationTarget: null, reply: "",
+        model: "clarification-followup",
+      };
+    } else {
+      parsed = await callGemini({ audio, catalog, session, models: modelList, deadline });
+    }
     timingsMs.gemini = Date.now() - geminiStarted;
-    console.log("[ESP32 voice] Gemini parsed", { ms: timingsMs.gemini, model: parsed.model, kind: parsed.kind });
 
     const transcript = String(parsed.transcript || "").trim().slice(0, 1500);
-    const transcriptWake = findWakeWord(transcript);
-    const modelWake = parsed.wakeWordHeard === true;
-    const wakeRequired = (process.env.ESP32_VOICE_REQUIRE_WAKE_WORD ?? "true").trim().toLowerCase() !== "false";
-    const wakeWordHeard = modelWake || transcriptWake.heard;
-    const wakeWord = normalizeText(process.env.ESP32_VOICE_WAKE_WORD || "jarvis");
-    const commandTranscript = transcriptWake.heard
-      ? transcriptWake.command
-      : normalizeText(transcript).replace(new RegExp(`(^|\\s)${wakeWord.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}(?=$|\\s)`, "iu"), " ").trim();
-
+    const wake = findWakeWord(transcript);
+    const wakeWordHeard = parsed.wakeWordHeard === true || wake.heard;
+    const commandTranscript = wake.heard ? wake.command : normalizeText(transcript)
+      .replace(new RegExp(`(^|\\s)${normalizeText(process.env.ESP32_VOICE_WAKE_WORD || "jarvis")}(?=$|\\s)`, "iu"), " ").trim();
+    const clarificationFollowup = Boolean(quickAction);
     if (!transcript || parsed.kind === "none") {
-      return responseData(controller, {
-        transcript, execution: "not_executed", reason: "not_understood", reply: "", timingsMs,
-      }, startedAt);
+      return responseData(controller, { transcript, execution: "not_executed", reason: "not_understood" }, startedAt, timingsMs);
     }
-    if (wakeRequired && !wakeWordHeard) {
-      return responseData(controller, {
-        transcript, execution: "ignored", reason: "wake_word_missing", reply: "", timingsMs,
-      }, startedAt);
+    if (wakeRequired && !wakeWordHeard && !clarificationFollowup) {
+      return responseData(controller, { transcript, execution: "ignored", reason: "wake_word_missing" }, startedAt, timingsMs);
     }
 
     if (parsed.kind === "question") {
-      const { runAssistantTurn } = await import("@/services/ai/assistantService");
-      const assistant = await runAssistantTurn({
-        homeId,
-        userId: String(controller.ownerId),
-        message: commandTranscript || transcript,
-        inputMode: "voice",
+      const reply = String(parsed.reply || "Main abhi is sawal ka jawab nahi de pa raha.").slice(0, 500);
+      after(async () => {
+        try {
+          await persistEsp32VoiceTurn({
+            sessionId: session.conversation?._id, userId: String(controller.ownerId), homeId,
+            controllerId: controller.esp32DeviceId, transcript: commandTranscript || transcript,
+            reply, actions: [], now: new Date(),
+          });
+        } catch (error) { console.error("[ESP32 voice] conversation save failed", error?.message); }
       });
-      return responseData(controller, {
-        transcript, execution: "processed", reason: "question_answered",
-        reply: assistant.reply || "", timingsMs,
-      }, startedAt);
+      return responseData(controller, { transcript, execution: "processed", reason: "question_answered", reply }, startedAt, timingsMs);
     }
 
-    if (parsed.clarification || parsed.actions.length === 0) {
-      return responseData(controller, {
-        transcript, execution: "needs_clarification",
-        reason: "ambiguous_or_missing_target",
-        reply: String(parsed.clarification || "Kaunsa device control karna hai?").slice(0, 180),
-        timingsMs,
-      }, startedAt);
+    if (parsed.actionConfidence !== "high" || parsed.clarification || !parsed.actions?.length) {
+      const question = String(parsed.clarification || "On karun ya off?").slice(0, 180);
+      const target = parsed.clarificationTarget || {};
+      const pendingClarification = {
+        ...(target.deviceId ? { deviceId: String(target.deviceId) } : {}),
+        ...(target.sceneId ? { sceneId: String(target.sceneId) } : {}),
+        ...(target.targetName ? { targetName: String(target.targetName).slice(0, 80) } : {}),
+        createdAt: new Date(),
+      };
+      after(async () => {
+        try {
+          await persistEsp32VoiceTurn({
+            sessionId: session.conversation?._id, userId: String(controller.ownerId), homeId,
+            controllerId: controller.esp32DeviceId, transcript: commandTranscript || transcript,
+            reply: question, clarification: question, pendingClarification,
+          });
+        } catch (error) { console.error("[ESP32 voice] clarification save failed", error?.message); }
+      });
+      return responseData(controller, { transcript, execution: "needs_clarification", reason: "ambiguous_or_low_confidence", reply: question }, startedAt, timingsMs);
     }
 
-    const deviceById = new Map(devices.map((device) => [String(device._id), device]));
-    const validSceneIds = new Set(SMART_SCENES.map((scene) => scene.id));
+    const devicesById = new Map(catalog.devices.map((d) => [d.id, d]));
     const validated = parsed.actions.map((action) => {
-      if (!action || !["on", "off"].includes(action.action)) {
-        throw new ServiceError("Invalid voice action", 400);
-      }
+      if (!action || !["on", "off"].includes(action.action)) throw new ServiceError("Invalid voice action", 400);
       const hasDevice = typeof action.deviceId === "string" && action.deviceId.length > 0;
       const hasScene = typeof action.sceneId === "string" && action.sceneId.length > 0;
       if (hasDevice === hasScene) throw new ServiceError("Voice action must target exactly one device or scene", 400);
       if (hasDevice) {
-        const device = deviceById.get(action.deviceId);
+        const device = devicesById.get(action.deviceId);
         if (!device) throw new ServiceError("Voice action device is outside this Home", 403);
         return { ...action, device };
       }
-      if (!validSceneIds.has(action.sceneId)) throw new ServiceError("Voice action scene is invalid", 400);
-      const sceneAction = ({ good_morning: "on", good_night: "off", away_mode: "off", all_lights_on: "on", all_lights_off: "off" })[action.sceneId];
-      if (action.action !== sceneAction) throw new ServiceError("Voice action does not match the selected scene", 400);
+      if (!Object.hasOwn(SCENE_ACTION, action.sceneId) || SCENE_ACTION[action.sceneId] !== action.action) {
+        throw new ServiceError("Voice action scene is invalid or mismatched", 400);
+      }
       return { ...action, isScene: true };
     });
 
@@ -363,46 +363,52 @@ export async function POST(request) {
       const idempotencyKey = `voice:${controller.esp32DeviceId}:${crypto.randomUUID()}`;
       if (action.device) {
         const { toggleDeviceById } = await import("@/services/deviceService");
-        const result = await toggleDeviceById(
-          String(action.device._id),
-          { desiredState: action.action, idempotencyKey },
-          { homeId, ownerId: String(controller.ownerId) }
-        );
-        return {
-          executed: true,
-          name: action.device.name,
-          action: action.action,
-          commandId: result.command?.commandId || "",
-          status: result.idempotentReplay ? "replayed" : "queued",
-        };
+        const result = await toggleDeviceById(action.device.id, {
+          desiredState: action.action, idempotencyKey,
+        }, { homeId, ownerId: String(controller.ownerId) });
+        return { name: action.device.name, action: action.action, deviceId: action.device.id,
+          commandId: result.command?.commandId || "", status: result.command?.status || "queued" };
       }
       const { executeScene } = await import("@/services/sceneService");
-      const result = await executeScene(action.sceneId, {
-        homeId,
-        ownerId: String(controller.ownerId),
-        idempotencyKey,
-      });
-      return {
-        executed: true,
-        name: SMART_SCENES.find((scene) => scene.id === action.sceneId)?.name || action.sceneId,
-        action: action.action,
-        isScene: true,
-        status: result.outcome || "queued",
-      };
+      const result = await executeScene(action.sceneId, { homeId, ownerId: String(controller.ownerId), idempotencyKey });
+      return { name: SMART_SCENES.find((s) => s.id === action.sceneId)?.name || action.sceneId,
+        action: action.action, sceneId: action.sceneId, status: result.outcome || "queued" };
     }));
+    const claimed = await claimPendingCommands({ esp32DeviceId: controller.esp32DeviceId, limit: 16 });
     timingsMs.execute = Date.now() - executeStarted;
-    console.log("[ESP32 voice] actions executed", { ms: timingsMs.execute, count: executionResults.length });
-
-    const reply = executionResults.map((result) =>
-      result.isScene ? `${result.name} scene activate kar diya.` : makeActionReply(result.action, { name: result.name })
-    ).join(" ");
+    const commands = claimed.map((cmd) => ({
+      commandId: cmd.commandId, relayNumber: cmd.relayNumber, action: cmd.action, ttlRemainingMs: cmd.ttlRemainingMs,
+    }));
+    const reply = String(parsed.reply || executionResults.map((r) => `${r.name} ${r.action} kar diya.`).join(" ")).slice(0, 500);
+    const actionRecords = executionResults.map((r) => ({ name: r.name, action: r.action, deviceId: r.deviceId || null, sceneId: r.sceneId || null }));
+    after(async () => {
+      try {
+        const saved = await persistEsp32VoiceTurn({
+          sessionId: session.conversation?._id, userId: String(controller.ownerId), homeId,
+          controllerId: controller.esp32DeviceId, transcript: commandTranscript || transcript,
+          reply, actions: actionRecords, pendingClarification: null,
+        });
+        if (session.conversation?.messageCount > 16) {
+          await refreshEsp32VoiceSummary({
+            sessionId: session.conversation._id, userId: String(controller.ownerId), homeId,
+            controllerId: controller.esp32DeviceId, summarize: summarizeWithGemini,
+          });
+        }
+        void saved;
+      } catch (error) { console.error("[ESP32 voice] background persistence failed", error?.message); }
+    });
+    console.log("[ESP32 voice] decision", {
+      controllerId: controller.esp32DeviceId, model: parsed.model, transcript,
+      kind: parsed.kind, actionConfidence: parsed.actionConfidence,
+      actions: parsed.actions, wakeWordHeard,
+      timingsMs: { ...timingsMs, total: Date.now() - startedAt },
+    });
     return responseData(controller, {
-      transcript, execution: "processed", reason: "command_queued",
-      reply, timingsMs, details: executionResults,
-    }, startedAt);
+      transcript, execution: "processed", reason: "command_queued", reply, commands,
+      details: executionResults,
+    }, startedAt, timingsMs);
   } catch (error) {
-    const totalMs = Date.now() - startedAt;
-    console.log("[ESP32 voice] request failed", { ms: totalMs, status: error?.statusCode || 500, message: error?.message });
+    console.error("[ESP32 voice] request failed", { totalMs: Date.now() - startedAt, status: error?.statusCode || 500, message: error?.message });
     return withNoStore(handleApiError(error));
   }
 }
