@@ -284,6 +284,18 @@ export async function POST(request) {
     const wakeWordHeard = parsed.wakeWordHeard === true || wake.heard;
     const commandTranscript = wake.heard ? wake.command : normalizeText(transcript)
       .replace(new RegExp(`(^|\\s)${normalizeText(process.env.ESP32_VOICE_WAKE_WORD || "jarvis")}(?=$|\\s)`, "iu"), " ").trim();
+    console.log("[ESP32 voice] transcript + decision", {
+      controllerId: controller.esp32DeviceId,
+      model: parsed.model,
+      transcript,
+      commandTranscript,
+      kind: parsed.kind,
+      actionConfidence: parsed.actionConfidence,
+      actions: parsed.actions,
+      clarification: parsed.clarification || null,
+      wakeWordHeard,
+      timingsMs: { ...timingsMs, total: Date.now() - startedAt },
+    });
     if (!transcript || parsed.kind === "none") {
       return responseData(controller, { transcript, execution: "not_executed", reason: "not_understood" }, startedAt, timingsMs);
     }
@@ -382,12 +394,6 @@ export async function POST(request) {
         }
         void saved;
       } catch (error) { console.error("[ESP32 voice] background persistence failed", error?.message); }
-    });
-    console.log("[ESP32 voice] decision", {
-      controllerId: controller.esp32DeviceId, model: parsed.model, transcript,
-      kind: parsed.kind, actionConfidence: parsed.actionConfidence,
-      actions: parsed.actions, wakeWordHeard,
-      timingsMs: { ...timingsMs, total: Date.now() - startedAt },
     });
     return responseData(controller, {
       transcript, execution: "processed", reason: "command_queued", reply, commands,
