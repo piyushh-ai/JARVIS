@@ -256,14 +256,19 @@ export async function POST(request) {
     const sessionPromise = loadEsp32VoiceSession({
       userId: String(controller.ownerId), homeId, controllerId: controller.esp32DeviceId,
     });
+    const decodeStarted = Date.now();
+    const catalogStarted = Date.now();
     const decodePromise = (async () => {
       const raw = await readBoundedAudio(request);
-      return parseAndPrepareVoiceWav(raw, request.headers.get("x-audio-codec") || "");
+      const prepared = parseAndPrepareVoiceWav(raw, request.headers.get("x-audio-codec") || "");
+      timingsMs.decode = Date.now() - decodeStarted;
+      return prepared;
     })();
-    const catalogPromise = loadCatalog(homeId);
+    const catalogPromise = loadCatalog(homeId).then((value) => {
+      timingsMs.catalog = Date.now() - catalogStarted;
+      return value;
+    });
     const [audio, catalog, session] = await Promise.all([decodePromise, catalogPromise, sessionPromise]);
-    timingsMs.decode = 0; // decodePromise is measured below via stage boundary
-    timingsMs.catalog = 0;
     // Record stable stage durations using the completed parallel stage's wall time.
     // Per-stage CPU work is small; database and audio preparation overlap by design.
     const wakeRequired = (process.env.ESP32_VOICE_REQUIRE_WAKE_WORD ?? "true").trim().toLowerCase() !== "false";
@@ -273,32 +278,27 @@ export async function POST(request) {
       process.env.GEMINI_VOICE_FALLBACK_MODEL?.trim() || "gemini-2.5-flash",
     ].filter((v, i, a) => v && a.indexOf(v) === i);
 
-    // A 30-second clarification continuation accepts a short on/off answer without repeating the wake word.
-    const bodyText = ""; // transcript is produced by Gemini except for this deterministic one-word follow-up path.
+    // Always transcribe once with Gemini. A recent clarification lets a short reply bypass only the wake-word gate.
     const pending = session.pendingClarification;
-    let parsed;
-    const quickAction = pending && Date.now() - new Date(pending.createdAt || 0).getTime() <= 30000
-      ? parseFollowupAction(bodyText) : null;
-
     const geminiStarted = Date.now();
-    if (quickAction && (pending.deviceId || pending.sceneId)) {
-      parsed = {
-        transcript: bodyText, wakeWordHeard: false, kind: "command", actionConfidence: "high",
-        actions: [{ ...(pending.deviceId ? { deviceId: pending.deviceId } : { sceneId: pending.sceneId }), action: quickAction }],
-        clarification: null, clarificationTarget: null, reply: "",
-        model: "clarification-followup",
-      };
-    } else {
-      parsed = await callGemini({ audio, catalog, session, models: modelList, deadline });
-    }
+    let parsed = await callGemini({ audio, catalog, session, models: modelList, deadline });
     timingsMs.gemini = Date.now() - geminiStarted;
 
     const transcript = String(parsed.transcript || "").trim().slice(0, 1500);
+    const quickAction = pending && Date.now() - new Date(pending.createdAt || 0).getTime() <= 30000
+      ? parseFollowupAction(transcript) : null;
+    const clarificationFollowup = Boolean(quickAction && (pending.deviceId || pending.sceneId));
+    if (clarificationFollowup) {
+      parsed = {
+        ...parsed, kind: "command", actionConfidence: "high", clarification: null,
+        actions: [{ ...(pending.deviceId ? { deviceId: pending.deviceId } : { sceneId: pending.sceneId }), action: quickAction }],
+        reply: "",
+      };
+    }
     const wake = findWakeWord(transcript);
     const wakeWordHeard = parsed.wakeWordHeard === true || wake.heard;
     const commandTranscript = wake.heard ? wake.command : normalizeText(transcript)
       .replace(new RegExp(`(^|\\s)${normalizeText(process.env.ESP32_VOICE_WAKE_WORD || "jarvis")}(?=$|\\s)`, "iu"), " ").trim();
-    const clarificationFollowup = Boolean(quickAction);
     if (!transcript || parsed.kind === "none") {
       return responseData(controller, { transcript, execution: "not_executed", reason: "not_understood" }, startedAt, timingsMs);
     }
