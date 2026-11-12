@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { decodeMuLawSample, normalizePcm16, parseAndPrepareVoiceWav } from "../src/services/ai/esp32VoiceAudio.js";
 import {
   findWakeWord, parseFollowupAction, isVoiceSessionActive,
-  toInlineVoiceCommands, makeVoiceResponseData, hasConflictingExplicitActions,
+  toInlineVoiceCommands, makeVoiceResponseData, hasConflictingExplicitActions, resolveClarificationFollowup,
 } from "../src/services/ai/esp32VoiceLogic.js";
 
 function wav({ encoding = 7, sampleRate = 16000, bits = 8, samples = Buffer.from([0xff, 0x7f, 0x00, 0x80]), codec = "mulaw" } = {}) {
@@ -67,7 +67,7 @@ test("clarification follow-ups parse only short explicit ON/OFF answers", () => 
   assert.equal(parseFollowupAction("band"), "off");
   assert.equal(parseFollowupAction("bujhao"), "off");
   assert.equal(parseFollowupAction("maybe on"), null);
-  assert.equal(hasConflictingExplicitActions("light on ya off"), true);
+  assert.equal(hasConflictingExplicitActions("light on ya off"), true);\n  const now = new Date("2026-11-12T12:00:00.000Z");\n  assert.deepEqual(resolveClarificationFollowup("band kar do", { deviceId: "dev-1", createdAt: new Date(now.getTime() - 5000) }, now), { action: "off", deviceId: "dev-1" });\n  assert.equal(resolveClarificationFollowup("on", { deviceId: "dev-1", createdAt: new Date(now.getTime() - 31000) }, now), null);
 });
 
 test("voice session continues until idle window expires", () => {
