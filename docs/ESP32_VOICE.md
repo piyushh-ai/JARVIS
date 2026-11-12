@@ -1,81 +1,93 @@
-# ESP32 Voice Control — Microphone to Assistant
+# ESP32 Voice Control — Firmware v1.5.0
 
-## What works in this phase
+## Overview
 
-The ESP32 captures a short INMP441 microphone clip, uploads it to the authenticated voice endpoint, Gemini transcribes Hindi/Hinglish/English, and the backend can pass a PIN-authorized command to the existing JARVIS assistant. The assistant uses the existing Home-scoped tools and command queue; relay state is still confirmed only by ESP32 ACK.
+The ESP32 uploads raw 8 kHz mono PCM16 WAV clips to the authenticated voice endpoint. Clips may be 0.5–4 seconds and up to 256 KB. Gemini receives the audio once and returns structured JSON containing the transcript, wake-word decision, intent, and catalog-resolved actions. Device commands go directly through JARVIS's existing Home-scoped command queue; informational questions use the existing assistant service.
 
-The endpoint returns the transcript, assistant reply, execution metadata, and tool summaries. The firmware prints those results to Serial Monitor. There is no audio playback in this phase because the amplifier and speaker are not connected.
+The wake word is an attention gate, not speaker authentication or proof of identity. The ESP32 controller token authenticates the hardware and voice actions are attributed to the controller's registered Home owner. Do not use voice control for locks, alarms, or safety-critical actuators.
 
-## Hardware and firmware
+## Environment variables
 
-- Board: ESP32 DevKit V1 / ESP32-WROOM-32 (no PSRAM assumed).
-- Microphone: INMP441, VDD -> 3V3, GND -> GND, BCLK -> GPIO26, WS -> GPIO25, SD -> GPIO33, L/R -> GND.
-- Existing relay mapping is preserved: IN1 -> GPIO13, IN2 -> GPIO12, IN3 -> GPIO14, IN4 -> GPIO15; active LOW.
-- I2S capture: 8 kHz mono, 32-bit I2S slot converted to PCM16 WAV, 3-second clip. This keeps the audio buffer around 48 KB instead of allocating a 96 KB 16 kHz/3-second buffer in internal DRAM.
-- Firmware keeps a 500 ms circular PCM16 pre-roll and requires three consecutive audio blocks above the provisional RMS threshold before upload. The pre-roll is prepended to the recording to reduce clipped first syllables. This is still a sustained sound gate, not wake-word recognition.
-- The provisional RMS threshold is currently 450 and requires three consecutive loud audio blocks. This value is based on the supplied Serial log and must still be calibrated in the actual room. A loud sustained noise can still trigger it; it is not a true wake-word detector or robust VAD.
-- The capture/upload is blocking for a few seconds; heartbeat and command polling pause during capture and network upload.
-- Firmware cooldown is 30 seconds. Tune `MIC_VOICE_THRESHOLD` using actual Serial RMS readings. If it false-triggers, raise it; if normal speech does not trigger, lower it gradually.
+Configure these server-only variables in Vercel Project Settings → Environment Variables:
 
-## Configure the voice PIN
+- `GEMINI_API_KEY` — required for audio understanding.
+- `ESP32_VOICE_WAKE_WORD` — optional; defaults to `jarvis`.
+- `ESP32_VOICE_REQUIRE_WAKE_WORD` — optional; defaults to `true`. Set to `false` only if commands without the wake word are intentionally allowed.
+- `GEMINI_VOICE_MODEL` — optional primary model override; defaults to `gemini-2.5-flash-lite`.
+- `GEMINI_VOICE_FALLBACK_MODEL` — optional Gemini-only fallback; defaults to `gemini-2.5-flash`.
 
-Set `ESP32_VOICE_PIN` in Vercel Project Settings -> Environment Variables and in local `.env.local` if testing locally. Use your own random 6–8 digit value. Do not commit it or send it in chat.
 
-The spoken phrase must contain all three parts:
 
-1. Wake phrase: “Jarvis”
-2. The word “PIN” followed by the configured digits
-3. The command
-
-Example: **“Jarvis, PIN 123456, main light on kar do.”**
-
-The backend removes the PIN phrase before sending the remaining command to the assistant. It does not store the raw audio or PIN in application logs or conversation messages. Gemini receives the audio for transcription, so the spoken PIN is included in that provider request.
-
-If the PIN is missing or incorrect, the transcript is returned but no assistant command is executed. PIN attempts are rate-limited. The PIN is a prototype second factor, not speaker recognition: anyone who knows or overhears it may use it. Commands are attributed to the controller's registered Home owner. Do not use this voice PIN mechanism for locks, alarms, or safety-critical devices.
-
-## Endpoint
+## Audio request
 
 `POST /api/esp32/voice`
 
 Headers:
+
 - `X-Device-Id: ESP32-001`
 - `Authorization: Bearer <controller-token>`
 - `Content-Type: audio/wav`
 
-Body: raw WAV bytes, not JSON or multipart. Maximum request size: 384 KB.
+Body: raw RIFF/WAVE bytes containing PCM16 mono audio. The server validates the RIFF/WAVE structure, PCM encoding, channel count, bit depth, and data chunk length. Maximum body size is 256 KB. No fixed clip duration is required.
 
-## Expected responses
+The endpoint retains the existing ESP32 controller authentication. It applies an additional per-controller limit of approximately 30 voice uploads per minute.
 
-- `execution: "not_executed"` with a reason when speech is empty, the wake phrase is missing, the PIN is missing/invalid, or voice PIN configuration is absent.
-- `execution: "processed"` when the assistant has processed the authorized transcript. Check `toolExecutions` for queued/partial/clarification/failure outcomes. “Processed” does not mean the relay has already changed.
-- The dashboard's reported state changes only after the ESP32 applies the queued relay command and sends its ACK.
+## Wake-word behavior
+
+The default wake word is `jarvis`. The parser tolerates common recognition variants including “jarvish”, “jarwis”, “jarvas”, “javis”, “jarviss”, and “जार्विस”. The wake word is removed from the command transcript before processing.
+
+When wake-word enforcement is enabled and no wake word is detected, the endpoint returns HTTP 200 with:
+
+- `execution: "ignored"`
+- `reason: "wake_word_missing"`
+- an empty `reply`
+- no device/scene execution and no conversation-memory write
+
+Unintelligible audio or background noise also returns HTTP 200 with `execution: "ignored"` and `reason: "not_understood"`. Ambiguous targets return `execution: "needs_clarification"` with a short question. Clear commands return `execution: "processed"` after commands have been queued.
+
+## Response contract
+
+Successful responses preserve this firmware-facing shape:
+
+```json
+{
+  "success": true,
+  "data": {
+    "transcript": "Jarvis, main light on kar do",
+    "execution": "processed",
+    "reason": "command_queued",
+    "reply": "Main Light on kar di.",
+    "serverMs": 740,
+    "timingsMs": {
+      "parseAudio": 1,
+      "db": 35,
+      "gemini": 520,
+      "execute": 80
+    }
+  }
+}
+```
+
+Timing values above are illustrative, not measured performance guarantees. `serverMs` is the actual server-side elapsed time for the request. The relay changes physically only after the ESP32 polls the command queue, applies the relay output, and sends its ACK.
 
 ## Test sequence
 
-1. First test relays from the dashboard manually with mains disconnected; confirm Serial shows command received, relay channel, and ACK success.
-2. Open Arduino Serial Monitor at 115200 baud. Confirm Wi-Fi, NTP, HTTPS health, heartbeat, and microphone initialization.
-3. Watch quiet-room and speech RMS. The current starting threshold is 450; adjust only in small steps after observing real speech. A trigger now requires three consecutive loud blocks, and the WAV includes 500 ms pre-roll. Avoid repeated testing faster than the 30-second cooldown.
-4. Confirm the firmware prints a transcript. If it prints unrelated words, improve mic placement and threshold before enabling command tests.
-5. Configure the PIN in Vercel and redeploy. Speak the exact wake phrase + PIN + a single device command.
-6. Confirm Serial shows `execution: processed`, a JARVIS reply, and a tool execution summary. Then wait for ESP32 polling and ACK; verify the dashboard reported state.
-7. Speak without the PIN or with a wrong PIN. It must return `not_executed` and no relay command should appear.
-8. Test an ambiguous command such as “Jarvis, PIN 123456, light on kar do” if multiple lights exist. JARVIS should ask for clarification instead of guessing.
+1. Confirm the ESP32 sends the controller ID and Bearer token exactly as before.
+2. Upload “Jarvis, main light on kar do”. Confirm `execution: "processed"`, a queued response, and a pending command on the ESP32.
+3. Upload “main light on kar do” without the wake word. With the default configuration it must return HTTP 200, `execution: "ignored"`, and `reason: "wake_word_missing"`; no command should be queued.
+4. Test a quiet/distant command and a noisy clip containing no clear speech. The latter must be ignored rather than guessed.
+5. Test a generic ambiguous target when multiple matching devices exist. The response must be `needs_clarification`.
+6. Confirm the dashboard's reported state changes only after a successful hardware ACK.
 
 ## Troubleshooting
 
-- HTTP 401: controller ID/token mismatch or revoked token. Never paste the bearer token into logs or chat.
-- HTTP 429 with `Retry after ...s`: check that the deployed voice route includes the shared-auth rate-limit fix. The voice route must call `authenticateEsp32Request(request)` with its normal shared hardware limit, not override it to 8/minute; command polling, heartbeat, and voice requests share the auth bucket. The separate voice-specific limiter remains 8 uploads/minute. Wait for the stated retry window after deploying the fix.
-- Empty or inaccurate transcript: mic channel/pin wiring, placement, RMS threshold, and clip timing need checking.
-- `voice_pin_required_or_invalid`: transcript did not contain the wake phrase and numeric PIN in the required format.
-- Assistant reply says clarification: provide the exact device name (e.g. “Main Light”).
-- Assistant queues a command but no physical change: inspect ESP32 pending poll, relay wiring/polarity, and ACK logs.
-- Build memory error: this sketch targets ESP32-WROOM-32 without PSRAM; keep the 8 kHz / 3-second PCM buffer size unless memory is measured again.
+- HTTP 401: controller ID/token mismatch or revoked token. Do not share the Bearer token.
+- HTTP 413: clip exceeds 256 KB.
+- HTTP 415 / 400: verify `Content-Type: audio/wav`, RIFF/WAVE header, PCM16 mono format, and chunk lengths.
+- HTTP 429: respect the response message's `Retry after Ns` interval. The additional voice limit is 30 requests/minute per controller.
+- Empty or inaccurate transcript: check INMP441 wiring, mic placement, clipping, and firmware capture gain/normalization.
+- Command queued but no physical change: inspect pending-command polling, relay wiring/polarity, and ESP32 ACK logs.
 
-## Security and privacy boundary
+## Privacy boundary
 
-The ESP32 bearer token authenticates the controller, not the speaker. This prototype requires a spoken PIN as a second factor and attributes the action to the controller's registered Home owner. It is not speaker biometrics and it is not suitable for high-risk actuators. Raw audio is held in memory for transcription and is not saved to MongoDB or disk. The speech provider receives the audio to perform transcription.
-
-
-## Continuous microphone task
-
-Microphone I2S sampling runs in a dedicated FreeRTOS task on core 1, independent of relay polling and heartbeat requests in the main loop. Voice uploads use a separate TLS/HTTP client to avoid concurrent access to the main HTTP client.
+Raw audio is processed in memory and sent to Gemini for understanding. Ignored audio is not written to assistant conversation memory. The wake word does not identify the speaker; controller authentication continues to identify the hardware, and actions remain scoped to the controller's linked Home.
