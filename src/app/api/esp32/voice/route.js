@@ -8,9 +8,6 @@ import Room from "@/models/Room";
 import { SMART_SCENES } from "@/lib/scenes/sceneDefinitions";
 import { authenticateEsp32Request } from "@/services/hardwareService";
 import { verifyHomeMembership } from "@/services/ai/homeContextService";
-import { runAssistantTurn } from "@/services/ai/assistantService";
-import { toggleDeviceById } from "@/services/deviceService";
-import { executeScene } from "@/services/sceneService";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -237,6 +234,8 @@ function makeActionReply(action, device) {
   return action === "on" ? `${name} on kar di.` : `${name} off kar di.`;
 }
 
+export { findWakeWord, validatePcm16MonoWav };
+
 export async function POST(request) {
   const startedAt = Date.now();
   const timingsMs = {};
@@ -314,6 +313,7 @@ export async function POST(request) {
     }
 
     if (parsed.kind === "question") {
+      const { runAssistantTurn } = await import("@/services/ai/assistantService");
       const assistant = await runAssistantTurn({
         homeId,
         userId: String(controller.ownerId),
@@ -354,9 +354,10 @@ export async function POST(request) {
     });
 
     const executeStarted = Date.now();
-    const executionResults = await Promise.all(validated.map(async (action, index) => {
+    const executionResults = await Promise.all(validated.map(async (action) => {
       const idempotencyKey = `voice:${controller.esp32DeviceId}:${crypto.randomUUID()}`;
       if (action.device) {
+        const { toggleDeviceById } = await import("@/services/deviceService");
         const result = await toggleDeviceById(
           String(action.device._id),
           { desiredState: action.action, idempotencyKey },
@@ -370,6 +371,7 @@ export async function POST(request) {
           status: result.idempotentReplay ? "replayed" : "queued",
         };
       }
+      const { executeScene } = await import("@/services/sceneService");
       const result = await executeScene(action.sceneId, {
         homeId,
         ownerId: String(controller.ownerId),
