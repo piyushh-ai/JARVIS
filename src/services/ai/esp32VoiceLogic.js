@@ -61,3 +61,16 @@ export function makeVoiceResponseData(controller, values, serverMs, timingsMs) {
     ...(values.details ? { details: values.details } : {}),
   };
 }
+
+export function resolveClarificationFollowup(text, pending, now = new Date()) {
+  if (!pending?.createdAt || (!pending.deviceId && !pending.sceneId)) return null;
+  const ageMs = now.getTime() - new Date(pending.createdAt).getTime();
+  if (ageMs < 0 || ageMs > 30000) return null;
+  const action = parseFollowupAction(text);
+  if (!action) return null;
+  return {
+    action,
+    ...(pending.deviceId ? { deviceId: pending.deviceId } : {}),
+    ...(pending.sceneId ? { sceneId: pending.sceneId } : {}),
+  };
+}
