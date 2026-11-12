@@ -93,12 +93,19 @@ constexpr int MIC_DATA_PIN = 33;
 constexpr uint32_t MIC_SAMPLE_RATE = 8000;
 constexpr size_t MIC_BUFFER_SAMPLES = 256;
 constexpr uint32_t MIC_REPORT_INTERVAL_MS = 500;
-constexpr uint32_t MIC_VOICE_THRESHOLD = 260; // Tune from Serial RMS readings
+// Noise gate: require several consecutive loud I2S blocks, not one transient spike.
+constexpr uint32_t MIC_VOICE_THRESHOLD = 450; // Initial value; tune using quiet-room RMS logs
+constexpr uint8_t MIC_VOICE_REQUIRED_CHUNKS = 3;
 constexpr uint32_t MIC_RECORD_SECONDS = 3;
 constexpr size_t MIC_RECORD_SAMPLES = MIC_SAMPLE_RATE * MIC_RECORD_SECONDS;
+constexpr size_t MIC_PRE_ROLL_SAMPLES = MIC_SAMPLE_RATE / 2; // 500 ms
 constexpr uint32_t MIC_UPLOAD_COOLDOWN_MS = 30000;
 
 int32_t micRawBuffer[MIC_BUFFER_SAMPLES];
+int16_t micPreRollBuffer[MIC_PRE_ROLL_SAMPLES];
+size_t micPreRollWriteIndex = 0;
+size_t micPreRollCount = 0;
+uint8_t micVoiceConsecutiveChunks = 0;
 uint8_t micWavBuffer[44 + MIC_RECORD_SAMPLES * 2];
 bool micReady = false;
 bool micUploadInProgress = false;
@@ -310,7 +317,7 @@ bool initializeMicrophone() {
 }
 
 void processMicrophone() {
-  if (!micReady) return;
+  if (!micReady || micUploadInProgress) return;
 
   size_t bytesRead = 0;
   esp_err_t result = i2s_read(
@@ -328,9 +335,16 @@ void processMicrophone() {
 
   for (size_t i = 0; i < samplesRead; i++) {
     // INMP441 24-bit audio is carried in a 32-bit I2S slot.
-    int32_t sample = micRawBuffer[i] >> 14;
-    int64_t value = sample;
+    int32_t levelSample = micRawBuffer[i] >> 14;
+    int64_t value = levelSample;
     sumSquares += (uint64_t)(value * value);
+
+    // Keep the latest 500 ms so speech onset is not discarded while
+    // the sustained-noise gate confirms that this is not a single spike.
+    int16_t pcm = (int16_t)(micRawBuffer[i] >> 16);
+    micPreRollBuffer[micPreRollWriteIndex] = pcm;
+    micPreRollWriteIndex = (micPreRollWriteIndex + 1) % MIC_PRE_ROLL_SAMPLES;
+    if (micPreRollCount < MIC_PRE_ROLL_SAMPLES) micPreRollCount++;
   }
 
   uint32_t rms = (uint32_t)sqrt((double)sumSquares / samplesRead);
@@ -341,15 +355,24 @@ void processMicrophone() {
     Serial.print("[MIC] RMS level: ");
     Serial.print(rms);
     Serial.print(" | ");
-    Serial.println(rms >= MIC_VOICE_THRESHOLD ? "VOICE/LOUD SOUND" : "quiet");
+    Serial.println(rms >= MIC_VOICE_THRESHOLD ? "LOUD" : "quiet");
   }
 
-  // Provisional sound-level trigger; this is not a wake-word detector.
+  if (rms >= MIC_VOICE_THRESHOLD) {
+    if (micVoiceConsecutiveChunks < MIC_VOICE_REQUIRED_CHUNKS) {
+      micVoiceConsecutiveChunks++;
+    }
+  } else {
+    micVoiceConsecutiveChunks = 0;
+  }
+
+  // This is a sustained sound gate, not true Jarvis wake-word recognition.
   if (
-    rms >= MIC_VOICE_THRESHOLD &&
+    micVoiceConsecutiveChunks >= MIC_VOICE_REQUIRED_CHUNKS &&
     !micUploadInProgress &&
     millis() - lastVoiceUploadMs >= MIC_UPLOAD_COOLDOWN_MS
   ) {
+    micVoiceConsecutiveChunks = 0;
     lastVoiceUploadMs = millis();
     if (WiFi.status() == WL_CONNECTED && clockSynced && httpsReady) {
       captureAndUploadVoice();
@@ -395,11 +418,25 @@ bool captureAndUploadVoice() {
   if (!micReady || micUploadInProgress) return false;
   micUploadInProgress = true;
 
-  Serial.println("[VOICE] Capturing 3-second audio...");
+  Serial.println("[VOICE] Capturing 3-second audio (500ms pre-roll included)...");
   const size_t targetBytes = MIC_RECORD_SAMPLES * sizeof(int16_t);
-  size_t writtenSamples = 0;
-  const unsigned long captureStarted = millis();
 
+  // Copy pre-roll oldest-to-newest so the first spoken syllable is retained.
+  size_t preRollSamples = micPreRollCount;
+  size_t oldestIndex =
+    (micPreRollWriteIndex + MIC_PRE_ROLL_SAMPLES - preRollSamples) %
+    MIC_PRE_ROLL_SAMPLES;
+  size_t writtenSamples = 0;
+
+  for (size_t i = 0; i < preRollSamples && writtenSamples < MIC_RECORD_SAMPLES; i++) {
+    int16_t pcm = micPreRollBuffer[(oldestIndex + i) % MIC_PRE_ROLL_SAMPLES];
+    size_t offset = 44 + writtenSamples * 2;
+    micWavBuffer[offset] = (uint16_t)pcm & 0xFF;
+    micWavBuffer[offset + 1] = ((uint16_t)pcm >> 8) & 0xFF;
+    writtenSamples++;
+  }
+
+  const unsigned long captureStarted = millis();
   while (writtenSamples < MIC_RECORD_SAMPLES &&
          millis() - captureStarted < 6000) {
     size_t bytesRead = 0;
