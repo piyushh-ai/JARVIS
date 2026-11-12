@@ -2,9 +2,9 @@
 
 ## Overview
 
-Firmware v1.6.0 sends a RIFF/WAVE G.711 mu-law (format tag 7), mono, 16 kHz, 8-bit payload to `POST /api/esp32/voice`, with `X-Audio-Codec: mulaw`. The server decodes it to PCM16, removes DC offset, normalizes quiet audio toward a 23000 peak (about -3 dBFS, gain capped at 40x), and sends a 16 kHz mono PCM16 WAV to Gemini. The previous firmware format—8 kHz mono PCM16 WAV—is still accepted and resampled to 16 kHz.
+Firmware v1.6.0 sends a RIFF/WAVE G.711 mu-law (format tag 7), mono, 16 kHz, 8-bit payload to `POST /api/esp32/voice`, with `X-Audio-Codec: mulaw`. The server decodes it to PCM16, removes DC offset, normalizes quiet audio toward a 23000 peak (about -3 dBFS, gain capped at 40x), and sends a 16 kHz mono PCM16 WAV to Groq Whisper for transcription. The previous firmware format—8 kHz mono PCM16 WAV—is still accepted and resampled to 16 kHz.
 
-The audio conversion is typed-array/buffer work only; it does not load an audio-processing library. The endpoint uses one Gemini call for transcription, intent, catalog grounding, and session-aware answers. It keeps the existing Home-scoped command queue and atomically claims commands for immediate delivery in the voice response.
+The audio conversion is typed-array/buffer work only; it does not load an audio-processing library. The endpoint uses Groq Whisper (`whisper-large-v3-turbo`) for multilingual transcription, followed by Groq Qwen (`qwen/qwen3.8-27b`) for intent classification, Home-catalog grounding, and session-aware answers. It keeps the existing Home-scoped command queue and atomically claims commands for immediate delivery in the voice response.
 
 The wake word is an attention gate, not speaker authentication or proof of identity. The ESP32 controller token authenticates the hardware and voice actions are attributed to the controller's registered Home owner. Do not use voice control for locks, alarms, or safety-critical actuators.
 
@@ -21,9 +21,9 @@ Configure these server-only values in Vercel Project Settings → Environment Va
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GEMINI_API_KEY` | — | Required for audio understanding |
-| `GEMINI_VOICE_MODEL` | `gemini-2.5-flash-lite` | Primary audio parser model |
-| `GEMINI_VOICE_FALLBACK_MODEL` | `gemini-2.5-flash` | Gemini-only fallback |
+| `GROQ_API_KEY` | — | Required for audio transcription and voice reasoning |
+| `GROQ_VOICE_STT_MODEL` | `whisper-large-v3-turbo` | Multilingual audio transcription |
+| `GROQ_VOICE_MODEL` | `qwen/qwen3.8-27b` | Voice intent, catalog grounding, and answers |
 | `ESP32_VOICE_WAKE_WORD` | `jarvis` | Configured wake word |
 | `ESP32_VOICE_REQUIRE_WAKE_WORD` | `true` | Require wake word except a recent clarification follow-up |
 | `ESP32_VOICE_SESSION_IDLE_MIN` | `15` | Start a new voice session after this many idle minutes |
@@ -64,23 +64,23 @@ The server accepts up to 256 KB, validates RIFF/chunk boundaries, and rejects fo
 
 The default wake word is `jarvis`. Common variants are accepted: “jarvish”, “jarwis”, “jarvas”, “javis”, “jarviss”, and “जार्विस”. The wake word is stripped from the saved transcript and command text.
 
-The parser understands Hinglish/Hindi/English. ON phrases include “on”, “chalu”, “start”, “jala do”, “jalao”, and “kholo”. OFF phrases include “off”, “band”, “stop”, “bujha do”, and “bujhao”. The prompt explicitly tells Gemini to distinguish the final consonant in “on” versus “off”. When a clear single action phrase is present, the server also applies that explicit polarity deterministically. If both polarities are present, or Gemini marks the action/target uncertain, the server does not execute and returns `execution: "needs_clarification"` (typically “On karun ya off?”).
+The parser understands Hinglish/Hindi/English. ON phrases include “on”, “chalu”, “start”, “jala do”, “jalao”, and “kholo”. OFF phrases include “off”, “band”, “stop”, “bujha do”, and “bujhao”. The prompt explicitly tells the Groq Qwen model to distinguish the final consonant in “on” versus “off”; the server independently validates explicit ON/OFF words before executing. When a clear single action phrase is present, the server also applies that explicit polarity deterministically. If both polarities are present, or Groq Qwen marks the action/target uncertain, the server does not execute and returns `execution: "needs_clarification"` (typically “On karun ya off?”).
 
-A clarification target is retained for 30 seconds. A short next utterance such as “on”, “band”, or “band kar do” can answer it without repeating the wake word. The follow-up is still transcribed once by Gemini; the pending target/action are then applied deterministically.
+A clarification target is retained for 30 seconds. A short next utterance such as “on”, “band”, or “band kar do” can answer it without repeating the wake word. The follow-up is still transcribed once by Groq Whisper; the pending target/action are then applied deterministically.
 
 ## Conversation memory
 
 Voice sessions are isolated by `(userId, homeId, source="esp32-voice", controllerId)`. A new turn continues the latest session while its last message is within `ESP32_VOICE_SESSION_IDLE_MIN` (default 15 minutes); after that idle window a new session is created.
 
-Each processed turn stores the wake-word-stripped user transcript, JARVIS reply, and executed actions. Ignored/empty audio is not stored. Gemini receives:
+Each processed turn stores the wake-word-stripped user transcript, JARVIS reply, and executed actions. Ignored/empty audio is not stored. Groq Qwen receives:
 
 1. The first two turns, pinned separately from the rolling message window.
 2. The rolling text summary.
 3. The latest 12 turns verbatim (each message bounded to keep prompt size controlled).
 
-After the session grows beyond roughly 16 turns (32 stored messages), a cheap text-only Gemini summary refresh folds older turns incrementally in `after()`. The voice response does not wait for conversation persistence or summary refresh. Cross-session long-term memory and semantic recall are phase 2; no LangChain or vector database is added to this request path.
+After the session grows beyond roughly 16 turns (32 stored messages), a cheap text-only Groq summary refresh folds older turns incrementally in `after()`. The voice response does not wait for conversation persistence or summary refresh. Cross-session long-term memory and semantic recall are phase 2; no LangChain or vector database is added to this request path.
 
-Questions such as “kaun si light on hai?” and “mera pehla sawal kya tha?” are answered by the same audio+catalog+context Gemini call. The legacy `/assistant` text-chat route is not changed.
+Questions such as “kaun si light on hai?” and “mera pehla sawal kya tha?” are answered by the same Whisper transcription + Qwen catalog/context reasoning pipeline. The legacy `/assistant` text-chat route is not changed.
 
 ## Inline command delivery and ACK
 
@@ -124,7 +124,7 @@ The existing response wrapper and execution names are retained. Example:
       "decode": 2,
       "auth": 18,
       "catalog": 25,
-      "gemini": 600,
+      "groq": 600,
       "execute": 90,
       "total": 840
     }
@@ -159,23 +159,23 @@ Hardware acceptance sequence:
 - HTTP 400/415: verify RIFF/WAVE header, format tag, sample rate, channel count, bit depth, data chunk length, and `X-Audio-Codec`.
 - HTTP 413: clip exceeds 256 KB.
 - HTTP 429: respect the existing rate-limit response and retry interval.
-- Incorrect on/off: inspect the logged transcript and decision; compare `GEMINI_VOICE_MODEL=gemini-2.5-flash-lite` against `gemini-2.5-flash` in Vercel.
+- Incorrect on/off: inspect the logged transcript and decision; inspect the Whisper transcript and `GROQ_VOICE_MODEL` response; try `whisper-large-v3` if transcription accuracy is insufficient.
 - Command queued but not executed: check inline `data.commands`, relay number, ACK logs, and then normal pending polling/lease expiry.
-- Slow requests: compare logged `auth`, `catalog`, `decode`, `gemini`, `execute`, and `total`. A sub-1.5-second total is a target, not a guaranteed SLA; Gemini network/model latency is outside the server's control.
+- Slow requests: compare logged `auth`, `catalog`, `decode`, `groq`, `execute`, and `total`. A sub-1.5-second total is a target, not a guaranteed SLA; Groq network/model latency is outside the server's control.
 
 ## Privacy boundary
 
-Audio is processed in memory and sent to Gemini for understanding. Ignored audio is not saved to voice conversation memory. Voice sessions are scoped to the authenticated controller, owner, and Home. The wake word does not identify the speaker.
+Audio is processed in memory and sent to Groq Whisper for transcription; the resulting text and Home context are sent to Groq Qwen for reasoning. Ignored audio is not saved to voice conversation memory. Voice sessions are scoped to the authenticated controller, owner, and Home. The wake word does not identify the speaker.
 
-### Gemini HTTP 502 diagnostics
+### Groq HTTP 502 diagnostics
 
-The ESP32 may report HTTP 502 when Gemini rejects a voice request or returns an unusable candidate. Inspect Vercel **Functions / Runtime Logs** and filter for `[ESP32 voice] Gemini`. The route now logs the model, upstream HTTP status, provider error code/status, and a redacted/truncated diagnostic message. It also reports blocked/empty candidates and malformed structured JSON without logging uploaded audio or transcripts.
+The ESP32 may report HTTP 502 when Groq rejects a transcription or chat-completion request. Inspect Vercel **Functions / Runtime Logs** and filter for `[ESP32 voice] Groq`. The route logs the transcription/chat stage, upstream HTTP status, and a redacted/truncated diagnostic message without logging uploaded audio or transcripts.
 
-- Upstream **400**: inspect Gemini generation configuration and supported response schema.
-- Upstream **401/403**: check the server-side `GEMINI_API_KEY` and project permissions.
-- Upstream **404**: check `GEMINI_VOICE_MODEL` and `GEMINI_VOICE_FALLBACK_MODEL` availability.
-- Upstream **429**: check Gemini quota/rate limits; the route returns a retryable 503.
+- Upstream **400**: inspect the Groq transcription model, WAV format, and chat request options.
+- Upstream **401/403**: check the server-side `GROQ_API_KEY`.
+- Upstream **404**: check `GROQ_VOICE_MODEL` and `GROQ_VOICE_STT_MODEL` availability.
+- Upstream **429**: check Groq quota/rate limits; the route returns a retryable 503.
 - Upstream **5xx**: likely a temporary provider failure.
-- Empty candidate: check the logged `finishReason` and `blockReason`.
+- 
 
 Do not post API keys, Bearer tokens, or full request bodies in bug reports. The route keeps existing ESP32 authentication, wake-word checks, and response execution values unchanged.

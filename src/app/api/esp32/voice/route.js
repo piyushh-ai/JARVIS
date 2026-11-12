@@ -20,7 +20,7 @@ export const maxDuration = 30;
 export const preferredRegion = "bom1";
 
 const MAX_AUDIO_BYTES = 256 * 1024;
-const GEMINI_TIMEOUT_MS = 8000;
+const GROQ_TIMEOUT_MS = 18000;
 const WAKE_WORD_ALIASES = ["jarvis", "jarvish", "jarwis", "jarvas", "javis", "jarviss", "जार्विस"];
 const SCENE_ACTION = {
   good_morning: "on",
@@ -79,7 +79,7 @@ async function loadCatalog(homeId) {
 function buildPrompt(catalog, session) {
   return [
     "You are JARVIS, a precise Hinglish/Hindi/English smart-home voice assistant. Return only JSON matching the schema.",
-    "Audio is mono WAV and may be quiet, distant, or noisy. Listen carefully to the FINAL consonant: 'on' and 'off' are different words.",
+    "Use the supplied speech transcript as the source of truth. Whisper may confuse Hinglish words; never change the transcript or guess whether the user said ON or OFF.",
     "ON phrases: on, chalu, start, jala do, jalao, kholo. OFF phrases: off, band, stop, bujha do, bujhao.",
     "Never infer OFF from ON or ON from OFF. If the final consonant/action is uncertain, actionConfidence='low' and ask exactly a short clarification such as 'On karun ya off?'.",
     "Resolve device names only against the supplied catalog. If the target is unclear or multiple devices match, do not execute; ask one short clarification.",
@@ -98,155 +98,167 @@ function buildPrompt(catalog, session) {
   ].join("\n");
 }
 
-const responseSchema = {
-  type: "OBJECT",
-  properties: {
-    transcript: { type: "STRING" },
-    wakeWordHeard: { type: "BOOLEAN" },
-    kind: { type: "STRING", enum: ["command", "question", "none"] },
-    actionConfidence: { type: "STRING", enum: ["high", "low"] },
-    actions: {
-      type: "ARRAY",
-      items: {
-        type: "OBJECT",
-        properties: {
-          deviceId: { type: "STRING", nullable: true },
-          sceneId: { type: "STRING", nullable: true },
-          action: { type: "STRING", enum: ["on", "off"] },
-        },
-        required: ["action"],
-      },
-    },
-    clarification: { type: "STRING", nullable: true },
-    clarificationTarget: {
-      type: "OBJECT",
-      properties: {
-        deviceId: { type: "STRING", nullable: true },
-        sceneId: { type: "STRING", nullable: true },
-        targetName: { type: "STRING", nullable: true },
-      },
-      required: ["deviceId", "sceneId", "targetName"],
-      nullable: true,
-    },
-    reply: { type: "STRING" },
-  },
-  required: ["transcript", "wakeWordHeard", "kind", "actionConfidence", "actions", "clarification", "clarificationTarget", "reply"],
-};
 
-async function callGemini({ audio, catalog, session, models, deadline }) {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey) throw new ServiceError("GEMINI_API_KEY is not configured", 503);
-  let lastError;
-  for (const model of models) {
+
+async function callGroq({ audio, catalog, session, deadline }) {
+  const apiKey = process.env.GROQ_API_KEY?.trim();
+  if (!apiKey) throw new ServiceError("GROQ_API_KEY is not configured", 503);
+
+  let transcription;
+  try {
+    const form = new FormData();
+    form.append("file", new Blob([audio], { type: "audio/wav" }), "jarvis-voice.wav");
+    form.append("model", process.env.GROQ_VOICE_STT_MODEL?.trim() || "whisper-large-v3-turbo");
+    form.append("response_format", "json");
     const remaining = deadline - Date.now();
-    if (remaining <= 0) break;
-    try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [
-            { text: buildPrompt(catalog, session) },
-            { inlineData: { mimeType: "audio/wav", data: audio.toString("base64") } },
-          ] }],
-          generationConfig: {
-            temperature: 0, maxOutputTokens: 220, responseMimeType: "application/json",
-            responseSchema, thinkingConfig: { thinkingBudget: 0 },
-          },
-        }),
-        signal: AbortSignal.timeout(remaining),
-      });
-      const bodyText = await response.text();
-      let payload;
-      try {
-        payload = JSON.parse(bodyText);
-      } catch {
-        console.error("[ESP32 voice] Gemini invalid JSON body", {
-          model, status: response.status, bodyLength: bodyText.length,
-        });
-        const error = new Error("Gemini returned invalid JSON");
-        error.status = response.status;
-        throw error;
-      }
-      if (!response.ok) {
-        const providerMessage = String(payload?.error?.message || "Unknown Gemini provider error");
-        const sanitized = providerMessage
-          .replaceAll(apiKey, "[REDACTED_API_KEY]")
-          .replace(/Bearer\s+[^\s]+/gi, "Bearer [REDACTED]")
-          .slice(0, 500);
-        console.error("[ESP32 voice] Gemini HTTP error", {
-          model, status: response.status, providerCode: payload?.error?.code,
-          providerStatus: payload?.error?.status, detail: sanitized,
-        });
-        const error = new Error(`Gemini HTTP ${response.status}`);
-        error.status = response.status;
-        throw error;
-      }
-      const candidate = payload?.candidates?.[0];
-      const raw = candidate?.content?.parts?.map((p) => p.text || "").join("").trim();
-      if (!raw) {
-        console.error("[ESP32 voice] Gemini empty candidate", {
-          model, finishReason: candidate?.finishReason,
-          blockReason: payload?.promptFeedback?.blockReason,
-          candidateCount: payload?.candidates?.length || 0,
-        });
-        throw new Error("Gemini returned an empty response");
-      }
-      let parsed;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        console.error("[ESP32 voice] Gemini invalid structured response", {
-          model, finishReason: candidate?.finishReason, responseLength: raw.length,
-        });
-        throw new Error("Gemini returned invalid structured JSON");
-      }
-      if (!["command", "question", "none"].includes(parsed.kind) ||
-          typeof parsed.transcript !== "string" || !Array.isArray(parsed.actions) ||
-          !["high", "low"].includes(parsed.actionConfidence)) {
-        console.error("[ESP32 voice] Gemini response schema mismatch", {
-          model, fields: Object.keys(parsed), finishReason: candidate?.finishReason,
-        });
-        throw new Error("Gemini response schema mismatch");
-      }
-      return { ...parsed, model };
-    } catch (error) {
-      lastError = error;
-      const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
-      const retryable = timedOut || error?.status === 408 || error?.status === 429 || error?.status >= 500;
-      console.error("[ESP32 voice] Gemini model attempt failed", {
-        model, status: error?.status || null, timedOut, retryable,
-        reason: String(error?.message || "Unknown error").slice(0, 180),
-      });
-      if (!retryable) break;
+    if (remaining <= 0) throw new Error("Voice analysis timed out");
+    const response = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}` },
+      body: form,
+      signal: AbortSignal.timeout(remaining),
+    });
+    const bodyText = await response.text();
+    let payload;
+    try { payload = JSON.parse(bodyText); }
+    catch {
+      const error = new Error("Groq transcription returned invalid JSON");
+      error.status = response.status;
+      throw error;
     }
+    if (!response.ok) {
+      const error = new Error(`Groq transcription HTTP ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
+    transcription = String(payload?.text || "").trim().slice(0, 1500);
+  } catch (error) {
+    const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
+    console.error("[ESP32 voice] Groq transcription failed", {
+      status: error?.status || null,
+      timedOut,
+      reason: String(error?.message || "Unknown error").replaceAll(apiKey, "[REDACTED_API_KEY]").slice(0, 180),
+    });
+    if (timedOut || Date.now() >= deadline) throw new ServiceError("Voice transcription timed out. Please retry.", 504);
+    if (error?.status === 429) throw new ServiceError("Groq is rate limited. Please retry shortly.", 503);
+    if (error?.status === 401 || error?.status === 403) throw new ServiceError("Groq authentication failed. Check GROQ_API_KEY in Vercel.", 502);
+    if (error?.status >= 500) throw new ServiceError("Groq transcription service is temporarily unavailable.", 502);
+    throw new ServiceError("Groq voice transcription failed. Check Vercel function logs.", 502);
   }
-  if (lastError?.name === "TimeoutError" || lastError?.name === "AbortError" || Date.now() >= deadline) {
-    throw new ServiceError("Voice analysis timed out. Please retry.", 504);
+
+  if (!transcription) {
+    return {
+      transcript: "",
+      wakeWordHeard: false,
+      kind: "none",
+      actionConfidence: "low",
+      actions: [],
+      clarification: null,
+      clarificationTarget: null,
+      reply: "",
+      model: process.env.GROQ_VOICE_MODEL?.trim() || "qwen/qwen3.8-27b",
+    };
   }
-  if (lastError?.status === 429) throw new ServiceError("Gemini is rate limited. Please retry shortly.", 503);
-  if (lastError?.status === 401 || lastError?.status === 403) throw new ServiceError("Gemini authentication failed. Check server configuration.", 502);
-  if (lastError?.status === 404) throw new ServiceError("Gemini voice model is unavailable. Check server configuration.", 502);
-  if (lastError?.status >= 500) throw new ServiceError("Gemini service is temporarily unavailable.", 502);
-  throw new ServiceError("Gemini voice analysis failed. Check Vercel function logs.", 502);
+
+  const model = process.env.GROQ_VOICE_MODEL?.trim() || "qwen/qwen3.8-27b";
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw new ServiceError("Voice analysis timed out. Please retry.", 504);
+
+  const schemaInstruction = [
+    "Return one valid JSON object only, with these fields:",
+    '{"transcript":"string","wakeWordHeard":"boolean","kind":"command|question|none","actionConfidence":"high|low","actions":[{"deviceId":"string or null","sceneId":"string or null","action":"on|off"}],"clarification":"string or null","clarificationTarget":{"deviceId":"string or null","sceneId":"string or null","targetName":"string or null"} or null,"reply":"string"}.',
+    "Do not include markdown fences or extra keys. Use empty actions for questions and none. Never guess a device or scene ID.",
+  ].join(" ");
+
+  let response;
+  try {
+    response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: schemaInstruction },
+          { role: "user", content: `${buildPrompt(catalog, session)}\n\nVerified speech transcript from Groq Whisper (use this exact text; do not rewrite it):\n${transcription}` },
+        ],
+        temperature: 0,
+        max_tokens: 320,
+        response_format: { type: "json_object" },
+      }),
+      signal: AbortSignal.timeout(remaining),
+    });
+  } catch (error) {
+    const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
+    if (timedOut || Date.now() >= deadline) throw new ServiceError("Voice analysis timed out. Please retry.", 504);
+    throw new ServiceError("Unable to reach Groq voice analysis.", 503);
+  }
+
+  const bodyText = await response.text();
+  let payload;
+  try { payload = JSON.parse(bodyText); }
+  catch { throw new ServiceError("Groq returned an invalid response. Check Vercel function logs.", 502); }
+  if (!response.ok) {
+    const detail = String(payload?.error?.message || "Unknown Groq provider error")
+      .replaceAll(apiKey, "[REDACTED_API_KEY]").slice(0, 250);
+    console.error("[ESP32 voice] Groq chat HTTP error", { status: response.status, detail });
+    if (response.status === 429) throw new ServiceError("Groq is rate limited. Please retry shortly.", 503);
+    if (response.status === 401 || response.status === 403) throw new ServiceError("Groq authentication failed. Check GROQ_API_KEY in Vercel.", 502);
+    if (response.status >= 500) throw new ServiceError("Groq service is temporarily unavailable.", 502);
+    throw new ServiceError(`Groq rejected voice analysis (${response.status}).`, 502);
+  }
+
+  const raw = String(payload?.choices?.[0]?.message?.content || "").trim();
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch {
+    console.error("[ESP32 voice] Groq invalid structured response", { model, responseLength: raw.length });
+    throw new ServiceError("Groq returned invalid structured JSON. Please retry.", 502);
+  }
+  if (!["command", "question", "none"].includes(parsed.kind) ||
+      !Array.isArray(parsed.actions) ||
+      typeof parsed.wakeWordHeard !== "boolean" ||
+      !["high", "low"].includes(parsed.actionConfidence)) {
+    console.error("[ESP32 voice] Groq response schema mismatch", { model, fields: Object.keys(parsed || {}) });
+    throw new ServiceError("Groq returned an incomplete voice response. Please retry.", 502);
+  }
+  return {
+    ...parsed,
+    transcript: transcription,
+    // Wake-word authorization is determined from the actual transcript below, never from model output.
+    wakeWordHeard: false,
+    clarification: typeof parsed.clarification === "string" ? parsed.clarification : null,
+    clarificationTarget: parsed.clarificationTarget && typeof parsed.clarificationTarget === "object"
+      ? parsed.clarificationTarget : null,
+    reply: typeof parsed.reply === "string" ? parsed.reply : "",
+    model,
+  };
 }
 
-async function summarizeWithGemini(previousSummary, olderText) {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
+async function summarizeWithGroq(previousSummary, olderText) {
+  const apiKey = process.env.GROQ_API_KEY?.trim();
   if (!apiKey) return previousSummary;
-  const model = process.env.GEMINI_VOICE_MODEL?.trim() || "gemini-2.5-flash-lite";
+  const model = process.env.GROQ_VOICE_MODEL?.trim() || "qwen/qwen3.8-27b";
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-      method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: `Fold this older conversation into a concise factual memory. Preserve the first user question and key facts. Existing summary:\n${previousSummary}\nOlder turns:\n${olderText}` }] }],
-        generationConfig: { temperature: 0, maxOutputTokens: 180, thinkingConfig: { thinkingBudget: 0 } },
+        model,
+        messages: [{
+          role: "user",
+          content: `Fold this older conversation into a concise factual memory. Preserve the first user question and key facts. Return only the summary.\nExisting summary:\n${previousSummary}\nOlder turns:\n${olderText}`,
+        }],
+        temperature: 0,
+        max_tokens: 180,
       }),
-      signal: AbortSignal.timeout(2500),
+      signal: AbortSignal.timeout(3500),
     });
     if (!response.ok) return previousSummary;
     const payload = await response.json();
-    return payload?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("").trim() || previousSummary;
+    return String(payload?.choices?.[0]?.message?.content || "").trim() || previousSummary;
   } catch { return previousSummary; }
 }
 
@@ -263,7 +275,7 @@ export { parseAndPrepareVoiceWav };
 
 export async function POST(request) {
   const startedAt = Date.now();
-  const timingsMs = { decode: 0, auth: 0, catalog: 0, gemini: 0, execute: 0 };
+  const timingsMs = { decode: 0, auth: 0, catalog: 0, groq: 0, execute: 0 };
   try {
     const authStarted = Date.now();
     const controller = await authenticateEsp32Request(request, {
@@ -296,17 +308,12 @@ export async function POST(request) {
     // Record stable stage durations using the completed parallel stage's wall time.
     // Per-stage CPU work is small; database and audio preparation overlap by design.
     const wakeRequired = (process.env.ESP32_VOICE_REQUIRE_WAKE_WORD ?? "true").trim().toLowerCase() !== "false";
-    const deadline = Date.now() + GEMINI_TIMEOUT_MS;
-    const modelList = [
-      process.env.GEMINI_VOICE_MODEL?.trim() || "gemini-2.5-flash-lite",
-      process.env.GEMINI_VOICE_FALLBACK_MODEL?.trim() || "gemini-2.5-flash",
-    ].filter((v, i, a) => v && a.indexOf(v) === i);
-
-    // Always transcribe once with Gemini. A recent clarification lets a short reply bypass only the wake-word gate.
+    const deadline = Date.now() + GROQ_TIMEOUT_MS;
+    // Groq Whisper transcribes the WAV; Groq Qwen interprets the transcript and selects safe actions.
     const pending = session.pendingClarification;
-    const geminiStarted = Date.now();
-    let parsed = await callGemini({ audio, catalog, session, models: modelList, deadline });
-    timingsMs.gemini = Date.now() - geminiStarted;
+    const groqStarted = Date.now();
+    let parsed = await callGroq({ audio, catalog, session, deadline });
+    timingsMs.groq = Date.now() - groqStarted;
 
     const transcript = String(parsed.transcript || "").trim().slice(0, 1500);
     const followup = resolveClarificationFollowup(transcript, pending);
@@ -441,7 +448,7 @@ export async function POST(request) {
         if (session.conversation?.messageCount >= 32) {
           await refreshEsp32VoiceSummary({
             sessionId: session.conversation._id, userId: String(controller.ownerId), homeId,
-            controllerId: controller.esp32DeviceId, summarize: summarizeWithGemini,
+            controllerId: controller.esp32DeviceId, summarize: summarizeWithGroq,
           });
         }
         void saved;

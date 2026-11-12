@@ -90,7 +90,7 @@ test("voice response retains the existing response data shape and adds commands"
   const data = makeVoiceResponseData({ esp32DeviceId: "ESP32-001" }, {
     transcript: "Jarvis light on", execution: "processed", reason: "command_queued",
     reply: "Light on kar di.", commands: [{ commandId: "cmd_1", relayNumber: 2, action: "on", ttlRemainingMs: 10000 }],
-  }, 840, { decode: 1, auth: 12, catalog: 20, gemini: 600, execute: 80, total: 840 });
+  }, 840, { decode: 1, auth: 12, catalog: 20, groq: 600, execute: 80, total: 840 });
   assert.equal(data.execution, "processed");
   assert.equal(data.serverMs, 840);
   assert.equal(data.commands[0].commandId, "cmd_1");
@@ -107,12 +107,14 @@ test("voice route atomically claims queued commands via the same pending-command
 });
 
 
-test("voice route reports sanitized Gemini provider diagnostics", async () => {
+test("voice route uses Groq Whisper and reports sanitized Groq diagnostics", async () => {
   const route = await readFile(new URL("../src/app/api/esp32/voice/route.js", import.meta.url), "utf8");
-  assert.match(route, /Gemini HTTP error/);
+  assert.match(route, /GROQ_API_KEY/);
+  assert.match(route, /\/audio\/transcriptions/);
+  assert.match(route, /\/chat\/completions/);
+  assert.match(route, /Groq chat HTTP error/);
   assert.match(route, /REDACTED_API_KEY/);
-  assert.match(route, /finishReason/);
-  assert.match(route, /blockReason/);
-  assert.match(route, /Gemini is rate limited/);
-  assert.match(route, /Gemini voice model is unavailable/);
+  assert.match(route, /Groq is rate limited/);
+  assert.match(route, /Groq authentication failed/);
+  assert.doesNotMatch(route, /GEMINI_API_KEY|generativelanguage\.googleapis\.com/);
 });

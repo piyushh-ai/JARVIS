@@ -5,7 +5,7 @@ const MIN_TIMEOUT_MS = 5000;
 const MAX_TIMEOUT_MS = 45000;
 const DEFAULT_MAX_TOKENS = 220;
 
-const PROVIDER_ORDER = ["gemini", "mistral", "groq", "openai"];
+const PROVIDER_ORDER = ["groq", "mistral", "gemini", "openai"];
 
 const PROVIDER_DEFAULTS = Object.freeze({
   gemini: Object.freeze({
@@ -19,7 +19,7 @@ const PROVIDER_DEFAULTS = Object.freeze({
     apiBase: "https://api.mistral.ai/v1",
   }),
   groq: Object.freeze({
-    defaultModel: "llama-3.3-70b-versatile",
+    defaultModel: "qwen/qwen3.8-27b",
     fallbackModels: [],
     apiBase: "https://api.groq.com/openai/v1",
   }),
@@ -92,7 +92,7 @@ export function resolveLlmConfig() {
       apiKey: "",
       failoverChain: [],
       error:
-        "No AI provider API key is configured on the server. Set GEMINI_API_KEY, MISTRAL_API_KEY, GROQ_API_KEY, or OPENAI_API_KEY.",
+        "No AI provider API key is configured on the server. Set GROQ_API_KEY, MISTRAL_API_KEY, GEMINI_API_KEY, or OPENAI_API_KEY.",
     };
   }
 
@@ -100,7 +100,7 @@ export function resolveLlmConfig() {
   const model =
     process.env.AI_MODEL?.trim() || PROVIDER_DEFAULTS[provider].defaultModel;
 
-  // Build backup provider configs for automatic cross-provider failover (e.g. Gemini -> Mistral)
+  // Build backup provider configs for automatic cross-provider failover (e.g. Groq -> Mistral)
   const failoverChain = [];
   for (const candidate of PROVIDER_ORDER) {
     if (candidate === provider) continue;
@@ -157,7 +157,7 @@ export function getProviderStatus() {
       ? {}
       : {
           message:
-            "Server AI provider is not configured. Configure an AI provider API key (Gemini, Mistral, Groq, or OpenAI) in server environment variables.",
+            "Server AI provider is not configured. Configure an AI provider API key (Groq, Mistral, Gemini, or OpenAI) in server environment variables.",
         }),
   };
 }
