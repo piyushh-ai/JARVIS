@@ -19,12 +19,22 @@ import { executeSmartSceneTool } from "@/services/ai/sceneTools";
 
 const MAX_MESSAGE_CHARS = 1500;
 const MAX_TITLE_CHARS = 80;
-const MAX_CONTEXT_MESSAGES = 12;
+const MAX_CONTEXT_MESSAGES = 20;
 const MAX_STORED_MESSAGES = 100;
 const MAX_TOOL_ROUNDS = 4;
 const MAX_TOOL_CALLS_PER_TURN = 6;
 
 const TOOL_SCHEMAS = Object.freeze([
+  {
+    name: "recall_conversations",
+    description: "Search earlier conversations in this same home for facts or decisions the user asks you to remember.",
+    parameters: {
+      type: "object",
+      properties: { query: { type: "string", description: "Short search phrase for prior conversation content." } },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
   {
     name: "list_home_rooms",
     description: "List all rooms configured in the user's active home.",
@@ -345,6 +355,25 @@ export async function executeValidatedToolCall(
     };
   }
 
+  if (toolName === "recall_conversations") {
+    await verifyHomeMembership({ homeId, userId, allowedRoles: ["owner", "admin", "member"] });
+    const query = sanitizeOptionalShortStr(rawArgs.query, "query", 160);
+    if (!query) return { status: "not_found", conversations: [] };
+    await connectDB();
+    const conversations = await Conversation.find(
+      { userId, homeId, $text: { $search: query } },
+      { score: { $meta: "textScore" } }
+    ).sort({ score: { $meta: "textScore" }, lastMessageAt: -1 })
+      .limit(5).select("title summary firstUserMessage messages lastMessageAt").lean();
+    return { status: conversations.length ? "completed" : "not_found",
+      conversations: conversations.map((item) => ({
+        title: item.title, summary: item.summary || "",
+        firstUserMessage: item.firstUserMessage || "",
+        relevantMessages: (item.messages || []).slice(-20).map((m) => ({ role: m.role, content: m.content })),
+        lastMessageAt: item.lastMessageAt,
+      })) };
+  }
+
   if (toolName === "list_home_rooms") {
     return listHomeRoomsTool({ homeId, userId });
   }
@@ -489,7 +518,7 @@ export async function listConversations({ homeId, userId, limit = 40 } = {}) {
   await verifyHomeMembership({ homeId, userId });
   await connectDB();
 
-  const docs = await Conversation.find({ userId, homeId, source: { $ne: "esp32-voice" } })
+  const docs = await Conversation.find({ userId, homeId, source: { $in: ["assistant-web", "esp32-voice"] } })
     .select("_id homeId title messageCount lastMessageAt createdAt updatedAt")
     .sort({ lastMessageAt: -1 })
     .limit(limit)
@@ -532,7 +561,7 @@ export async function getConversationById(
   await verifyHomeMembership({ homeId, userId });
   await connectDB();
 
-  const conv = await Conversation.findOne({ _id: conversationId, source: { $ne: "esp32-voice" } }).lean();
+  const conv = await Conversation.findOne({ _id: conversationId, source: { $in: ["assistant-web", "esp32-voice"] } }).lean();
   if (!conv) {
     throw new ServiceError("Conversation not found", 404);
   }
@@ -557,7 +586,7 @@ export async function deleteConversationById(
   await verifyHomeMembership({ homeId, userId });
   await connectDB();
 
-  const conv = await Conversation.findOne({ _id: conversationId, source: { $ne: "esp32-voice" } })
+  const conv = await Conversation.findOne({ _id: conversationId, source: { $in: ["assistant-web", "esp32-voice"] } })
     .select("_id userId homeId title")
     .lean();
   if (!conv) {

@@ -13,7 +13,7 @@ export function getVoiceIdleMinutes() {
 export async function loadEsp32VoiceSession({ userId, homeId, controllerId, now = new Date() }) {
   await connectDB();
   const session = await Conversation.findOne({
-    userId, homeId, source: "esp32-voice", controllerId,
+    userId, homeId,
   }).sort({ lastMessageAt: -1 }).lean();
   if (!session || !isVoiceSessionActive(session.lastMessageAt, now, getVoiceIdleMinutes())) {
     return { conversation: null, context: [], summary: "", pendingClarification: null };
@@ -77,14 +77,14 @@ export async function persistEsp32VoiceTurn({
       };
     }
     await Conversation.updateOne(
-      { _id: sessionId, userId, homeId, source: "esp32-voice", controllerId },
+      { _id: sessionId, userId, homeId },
       update
     );
     return sessionId;
   }
 
   const created = await Conversation.create({
-    userId, homeId, source: "esp32-voice", controllerId,
+    userId, homeId, source: "assistant-web",
     sessionStartedAt: now, lastMessageAt: assistantMessage.createdAt,
     firstUserMessage: String(transcript).slice(0, 1500),
     title: String(transcript).slice(0, 80) || "ESP32 Voice Session",
@@ -100,7 +100,7 @@ export async function refreshEsp32VoiceSummary({ sessionId, userId, homeId, cont
   if (!sessionId || typeof summarize !== "function") return;
   await connectDB();
   const session = await Conversation.findOne({
-    _id: sessionId, userId, homeId, source: "esp32-voice", controllerId,
+    _id: sessionId, userId, homeId,
   }).select("messages summary messageCount summaryThroughMessageCount").lean();
 
   // messageCount counts user + assistant documents, so 32 messages is about 16 turns.
@@ -117,7 +117,7 @@ export async function refreshEsp32VoiceSummary({ sessionId, userId, homeId, cont
   if (!summary) return;
 
   await Conversation.updateOne(
-    { _id: sessionId, userId, homeId, source: "esp32-voice", controllerId },
+    { _id: sessionId, userId, homeId },
     { $set: {
       summary: String(summary).slice(0, 5000),
       summaryThroughMessageCount: endAbsolute,

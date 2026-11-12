@@ -118,3 +118,15 @@ test("voice route uses Groq Whisper and reports sanitized Groq diagnostics", asy
   assert.match(route, /Groq authentication failed/);
   assert.doesNotMatch(route, /GEMINI_API_KEY|generativelanguage\.googleapis\.com/);
 });
+
+test("wake word detection is fuzzy and handles Devanagari and Arabic spellings", () => {
+  for (const word of ["Jarvis", "Jarvish", "Jarvik", "Jarvid", "Garvin", "Darvish", "जार्विस", "जार्वेश", "جارویس"]) {
+    assert.equal(findWakeWord(word + " light on").heard, true, word);
+  }
+});
+test("deterministic parser resolves a unique fan and all lights scene", async () => {
+  const { parseDeterministicVoiceCommand } = await import("../src/services/ai/esp32VoiceLogic.js");
+  const catalog = { devices: [{ id: "fan-1", name: "Ceiling Fan", type: "fan", aliases: ["pankha"] }] };
+  assert.equal(parseDeterministicVoiceCommand("pankha chalao", catalog).actions[0].deviceId, "fan-1");
+  assert.equal(parseDeterministicVoiceCommand("sari lights band karo", catalog).actions[0].sceneId, "all_lights_off");
+});
