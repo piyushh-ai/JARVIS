@@ -219,6 +219,7 @@ async function callGroq({ audio, catalog, session, deadline }) {
   }
   if (!["command", "question", "none"].includes(parsed.kind) ||
       !Array.isArray(parsed.actions) ||
+      typeof parsed.wakeWordHeard !== "boolean" ||
       !["high", "low"].includes(parsed.actionConfidence)) {
     console.error("[ESP32 voice] Groq response schema mismatch", { model, fields: Object.keys(parsed || {}) });
     throw new ServiceError("Groq returned an incomplete voice response. Please retry.", 502);
@@ -226,7 +227,8 @@ async function callGroq({ audio, catalog, session, deadline }) {
   return {
     ...parsed,
     transcript: transcription,
-    wakeWordHeard: parsed.wakeWordHeard === true,
+    // Wake-word authorization is determined from the actual transcript below, never from model output.
+    wakeWordHeard: false,
     clarification: typeof parsed.clarification === "string" ? parsed.clarification : null,
     clarificationTarget: parsed.clarificationTarget && typeof parsed.clarificationTarget === "object"
       ? parsed.clarificationTarget : null,
@@ -307,7 +309,7 @@ export async function POST(request) {
     // Per-stage CPU work is small; database and audio preparation overlap by design.
     const wakeRequired = (process.env.ESP32_VOICE_REQUIRE_WAKE_WORD ?? "true").trim().toLowerCase() !== "false";
     const deadline = Date.now() + GROQ_TIMEOUT_MS;
-    // Groq Whisper transcribes the WAV; Groq Llama interprets the transcript and selects safe actions.
+    // Groq Whisper transcribes the WAV; Groq Qwen interprets the transcript and selects safe actions.
     const pending = session.pendingClarification;
     const groqStarted = Date.now();
     let parsed = await callGroq({ audio, catalog, session, deadline });
