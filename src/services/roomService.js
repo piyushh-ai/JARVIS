@@ -1,4 +1,5 @@
 import { connectDB } from "@/lib/db/connect";
+import { invalidateVoiceCatalog } from "@/services/ai/esp32VoiceCache";
 import Room from "@/models/Room";
 import Device from "@/models/Device";
 import { ServiceError } from "@/lib/utils/apiResponse";
