@@ -79,7 +79,7 @@ async function loadCatalog(homeId) {
 function buildPrompt(catalog, session) {
   return [
     "You are JARVIS, a precise Hinglish/Hindi/English smart-home voice assistant. Return only JSON matching the schema.",
-    "Audio is mono WAV and may be quiet, distant, or noisy. Listen carefully to the FINAL consonant: 'on' and 'off' are different words.",
+    "Use the supplied speech transcript as the source of truth. Whisper may confuse Hinglish words; never change the transcript or guess whether the user said ON or OFF.",
     "ON phrases: on, chalu, start, jala do, jalao, kholo. OFF phrases: off, band, stop, bujha do, bujhao.",
     "Never infer OFF from ON or ON from OFF. If the final consonant/action is uncertain, actionConfidence='low' and ask exactly a short clarification such as 'On karun ya off?'.",
     "Resolve device names only against the supplied catalog. If the target is unclear or multiple devices match, do not execute; ask one short clarification.",
@@ -98,40 +98,7 @@ function buildPrompt(catalog, session) {
   ].join("\n");
 }
 
-const responseSchema = {
-  type: "OBJECT",
-  properties: {
-    transcript: { type: "STRING" },
-    wakeWordHeard: { type: "BOOLEAN" },
-    kind: { type: "STRING", enum: ["command", "question", "none"] },
-    actionConfidence: { type: "STRING", enum: ["high", "low"] },
-    actions: {
-      type: "ARRAY",
-      items: {
-        type: "OBJECT",
-        properties: {
-          deviceId: { type: "STRING", nullable: true },
-          sceneId: { type: "STRING", nullable: true },
-          action: { type: "STRING", enum: ["on", "off"] },
-        },
-        required: ["action"],
-      },
-    },
-    clarification: { type: "STRING", nullable: true },
-    clarificationTarget: {
-      type: "OBJECT",
-      properties: {
-        deviceId: { type: "STRING", nullable: true },
-        sceneId: { type: "STRING", nullable: true },
-        targetName: { type: "STRING", nullable: true },
-      },
-      required: ["deviceId", "sceneId", "targetName"],
-      nullable: true,
-    },
-    reply: { type: "STRING" },
-  },
-  required: ["transcript", "wakeWordHeard", "kind", "actionConfidence", "actions", "clarification", "clarificationTarget", "reply"],
-};
+
 
 async function callGroq({ audio, catalog, session, deadline }) {
   const apiKey = process.env.GROQ_API_KEY?.trim();
@@ -147,7 +114,7 @@ async function callGroq({ audio, catalog, session, deadline }) {
     if (remaining <= 0) throw new Error("Voice analysis timed out");
     const response = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
       method: "POST",
-      headers: { authorization: \`Bearer \${apiKey}\` },
+      headers: { authorization: `Bearer ${apiKey}` },
       body: form,
       signal: AbortSignal.timeout(remaining),
     });
@@ -160,7 +127,7 @@ async function callGroq({ audio, catalog, session, deadline }) {
       throw error;
     }
     if (!response.ok) {
-      const error = new Error(\`Groq transcription HTTP \${response.status}\`);
+      const error = new Error(`Groq transcription HTTP ${response.status}`);
       error.status = response.status;
       throw error;
     }
@@ -209,13 +176,13 @@ async function callGroq({ audio, catalog, session, deadline }) {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: \`Bearer \${apiKey}\`,
+        authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         model,
         messages: [
           { role: "system", content: schemaInstruction },
-          { role: "user", content: \`\${buildPrompt(catalog, session)}\\n\\nVerified speech transcript from Groq Whisper (use this exact text; do not rewrite it):\\n\${transcription}\` },
+          { role: "user", content: `${buildPrompt(catalog, session)}\n\nVerified speech transcript from Groq Whisper (use this exact text; do not rewrite it):\n${transcription}` },
         ],
         temperature: 0,
         max_tokens: 320,
@@ -240,7 +207,7 @@ async function callGroq({ audio, catalog, session, deadline }) {
     if (response.status === 429) throw new ServiceError("Groq is rate limited. Please retry shortly.", 503);
     if (response.status === 401 || response.status === 403) throw new ServiceError("Groq authentication failed. Check GROQ_API_KEY in Vercel.", 502);
     if (response.status >= 500) throw new ServiceError("Groq service is temporarily unavailable.", 502);
-    throw new ServiceError(\`Groq rejected voice analysis (\${response.status}).\`, 502);
+    throw new ServiceError(`Groq rejected voice analysis (${response.status}).`, 502);
   }
 
   const raw = String(payload?.choices?.[0]?.message?.content || "").trim();
@@ -275,12 +242,12 @@ async function summarizeWithGroq(previousSummary, olderText) {
   try {
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: \`Bearer \${apiKey}\` },
+      headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model,
         messages: [{
           role: "user",
-          content: \`Fold this older conversation into a concise factual memory. Preserve the first user question and key facts. Return only the summary.\\nExisting summary:\\n\${previousSummary}\\nOlder turns:\\n\${olderText}\`,
+          content: `Fold this older conversation into a concise factual memory. Preserve the first user question and key facts. Return only the summary.\nExisting summary:\n${previousSummary}\nOlder turns:\n${olderText}`,
         }],
         temperature: 0,
         max_tokens: 180,
@@ -344,6 +311,7 @@ export async function POST(request) {
     const pending = session.pendingClarification;
     const groqStarted = Date.now();
     let parsed = await callGroq({ audio, catalog, session, deadline });
+    timingsMs.groq = Date.now() - groqStarted;
 
     const transcript = String(parsed.transcript || "").trim().slice(0, 1500);
     const followup = resolveClarificationFollowup(transcript, pending);
