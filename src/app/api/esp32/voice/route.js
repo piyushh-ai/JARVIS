@@ -173,7 +173,10 @@ async function parseVoiceWithGemini(audio, catalog) {
   ].filter((model, index, list) => model && list.indexOf(model) === index);
 
   let lastError;
+  const deadline = Date.now() + GEMINI_TIMEOUT_MS;
   for (const model of models) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
     try {
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
@@ -196,7 +199,7 @@ async function parseVoiceWithGemini(audio, catalog) {
               thinkingConfig: { thinkingBudget: 0 },
             },
           }),
-          signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+          signal: AbortSignal.timeout(remainingMs),
         }
       );
       if (!response.ok) {
@@ -223,7 +226,7 @@ async function parseVoiceWithGemini(audio, catalog) {
       if (error?.name === "TimeoutError" || error?.name === "AbortError") break;
     }
   }
-  if (lastError?.name === "TimeoutError" || lastError?.name === "AbortError") {
+  if (Date.now() >= deadline || lastError?.name === "TimeoutError" || lastError?.name === "AbortError") {
     throw new ServiceError("Voice analysis timed out. Please retry.", 504);
   }
   throw new ServiceError("Gemini could not understand the audio request", 502);
