@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
 import { handleApiError, ServiceError, successResponse } from "@/lib/utils/apiResponse";
-import { enforceRateLimit } from "@/lib/utils/rateLimit";
 import { withNoStore } from "@/lib/auth/guards";
 import { authenticateEsp32Request } from "@/services/hardwareService";
 import { verifyHomeMembership } from "@/services/ai/homeContextService";
@@ -68,8 +67,9 @@ function extractVoiceCommand(transcript, expectedPin) {
 export async function POST(request) {
   try {
     const controller = await authenticateEsp32Request(request, {
-      maxRequests: 8,
+      maxRequests: 6,
       windowMs: 60 * 1000,
+      deviceRateLimitKeyPrefix: "esp32-voice",
     });
     if (!controller.homeId || !controller.ownerId) {
       throw new ServiceError("Controller must be linked to a Home owner", 403);
@@ -79,11 +79,6 @@ export async function POST(request) {
       userId: String(controller.ownerId),
       allowedRoles: ["owner"],
     });
-    await enforceRateLimit(`esp32_voice:${controller.esp32DeviceId}`, {
-      maxRequests: 8,
-      windowMs: 60 * 1000,
-    });
-
     const declaredLength = Number(request.headers.get("content-length") || 0);
     if (declaredLength > MAX_AUDIO_BYTES) {
       throw new ServiceError("Audio payload exceeds the 384 KB limit", 413);
