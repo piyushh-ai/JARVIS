@@ -5,7 +5,7 @@ const MIN_TIMEOUT_MS = 5000;
 const MAX_TIMEOUT_MS = 45000;
 const DEFAULT_MAX_TOKENS = 220;
 
-const PROVIDER_ORDER = ["gemini", "mistral", "groq", "openai"];
+const PROVIDER_ORDER = ["groq", "mistral", "gemini", "openai"];
 
 const PROVIDER_DEFAULTS = Object.freeze({
   gemini: Object.freeze({
@@ -92,7 +92,7 @@ export function resolveLlmConfig() {
       apiKey: "",
       failoverChain: [],
       error:
-        "No AI provider API key is configured on the server. Set GEMINI_API_KEY, MISTRAL_API_KEY, GROQ_API_KEY, or OPENAI_API_KEY.",
+        "No AI provider API key is configured on the server. Set GROQ_API_KEY, MISTRAL_API_KEY, GEMINI_API_KEY, or OPENAI_API_KEY.",
     };
   }
 
