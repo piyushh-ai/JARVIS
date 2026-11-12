@@ -5,8 +5,6 @@ import { authenticateEsp32Request } from "@/services/hardwareService";
 import { verifyHomeMembership } from "@/services/ai/homeContextService";
 import { transcribeAudioBuffer } from "@/services/ai/speechToText";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
 
 const MAX_AUDIO_BYTES = 384 * 1024;
 
