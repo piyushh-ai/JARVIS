@@ -156,28 +156,79 @@ async function callGemini({ audio, catalog, session, models, deadline }) {
         }),
         signal: AbortSignal.timeout(remaining),
       });
+      const bodyText = await response.text();
+      let payload;
+      try {
+        payload = JSON.parse(bodyText);
+      } catch {
+        console.error("[ESP32 voice] Gemini invalid JSON body", {
+          model, status: response.status, bodyLength: bodyText.length,
+        });
+        const error = new Error("Gemini returned invalid JSON");
+        error.status = response.status;
+        throw error;
+      }
       if (!response.ok) {
+        const providerMessage = String(payload?.error?.message || "Unknown Gemini provider error");
+        const sanitized = providerMessage
+          .replaceAll(apiKey, "[REDACTED_API_KEY]")
+          .replace(/Bearer\\s+[^\\s]+/gi, "Bearer [REDACTED]")
+          .slice(0, 500);
+        console.error("[ESP32 voice] Gemini HTTP error", {
+          model, status: response.status, providerCode: payload?.error?.code,
+          providerStatus: payload?.error?.status, detail: sanitized,
+        });
         const error = new Error(`Gemini HTTP ${response.status}`);
         error.status = response.status;
         throw error;
       }
-      const payload = await response.json();
-      const raw = payload?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("").trim();
-      if (!raw) throw new Error("Gemini returned an empty response");
-      const parsed = JSON.parse(raw);
+      const candidate = payload?.candidates?.[0];
+      const raw = candidate?.content?.parts?.map((p) => p.text || "").join("").trim();
+      if (!raw) {
+        console.error("[ESP32 voice] Gemini empty candidate", {
+          model, finishReason: candidate?.finishReason,
+          blockReason: payload?.promptFeedback?.blockReason,
+          candidateCount: payload?.candidates?.length || 0,
+        });
+        throw new Error("Gemini returned an empty response");
+      }
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        console.error("[ESP32 voice] Gemini invalid structured response", {
+          model, finishReason: candidate?.finishReason, responseLength: raw.length,
+        });
+        throw new Error("Gemini returned invalid structured JSON");
+      }
       if (!["command", "question", "none"].includes(parsed.kind) ||
           typeof parsed.transcript !== "string" || !Array.isArray(parsed.actions) ||
-          !["high", "low"].includes(parsed.actionConfidence)) throw new Error("Gemini response schema mismatch");
+          !["high", "low"].includes(parsed.actionConfidence)) {
+        console.error("[ESP32 voice] Gemini response schema mismatch", {
+          model, fields: Object.keys(parsed), finishReason: candidate?.finishReason,
+        });
+        throw new Error("Gemini response schema mismatch");
+      }
       return { ...parsed, model };
     } catch (error) {
       lastError = error;
-      if (error?.name === "TimeoutError" || error?.name === "AbortError") break;
+      const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
+      const retryable = timedOut || error?.status === 408 || error?.status === 429 || error?.status >= 500;
+      console.error("[ESP32 voice] Gemini model attempt failed", {
+        model, status: error?.status || null, timedOut, retryable,
+        reason: String(error?.message || "Unknown error").slice(0, 180),
+      });
+      if (!retryable) break;
     }
   }
   if (lastError?.name === "TimeoutError" || lastError?.name === "AbortError" || Date.now() >= deadline) {
     throw new ServiceError("Voice analysis timed out. Please retry.", 504);
   }
-  throw new ServiceError("Gemini could not understand the audio request", 502);
+  if (lastError?.status === 429) throw new ServiceError("Gemini is rate limited. Please retry shortly.", 503);
+  if (lastError?.status === 401 || lastError?.status === 403) throw new ServiceError("Gemini authentication failed. Check server configuration.", 502);
+  if (lastError?.status === 404) throw new ServiceError("Gemini voice model is unavailable. Check server configuration.", 502);
+  if (lastError?.status >= 500) throw new ServiceError("Gemini service is temporarily unavailable.", 502);
+  throw new ServiceError("Gemini voice analysis failed. Check Vercel function logs.", 502);
 }
 
 async function summarizeWithGemini(previousSummary, olderText) {
