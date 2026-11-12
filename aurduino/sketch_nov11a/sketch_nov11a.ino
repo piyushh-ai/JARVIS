@@ -95,8 +95,9 @@ constexpr uint32_t MIC_SAMPLE_RATE = 16000;
 constexpr size_t MIC_BUFFER_SAMPLES = 256;
 constexpr uint32_t MIC_REPORT_INTERVAL_MS = 500;
 constexpr uint32_t MIC_VOICE_THRESHOLD = 180; // Tune from Serial RMS readings
-constexpr uint32_t MIC_RECORD_SECONDS = 3;
-constexpr size_t MIC_RECORD_SAMPLES = MIC_SAMPLE_RATE * MIC_RECORD_SECONDS;
+// Keep the capture buffer small enough for the ESP32-WROOM-32 (no PSRAM).
+constexpr uint32_t MIC_RECORD_MS = 1500;
+constexpr size_t MIC_RECORD_SAMPLES = (MIC_SAMPLE_RATE * MIC_RECORD_MS) / 1000;
 constexpr uint32_t MIC_UPLOAD_COOLDOWN_MS = 10000;
 
 int32_t micRawBuffer[MIC_BUFFER_SAMPLES];
@@ -396,7 +397,7 @@ bool captureAndUploadVoice() {
   if (!micReady || micUploadInProgress) return false;
   micUploadInProgress = true;
 
-  Serial.println("[VOICE] Capturing 3-second audio...");
+  Serial.println("[VOICE] Capturing 1.5-second audio...");
   const size_t targetBytes = MIC_RECORD_SAMPLES * sizeof(int16_t);
   size_t writtenSamples = 0;
   const unsigned long captureStarted = millis();
