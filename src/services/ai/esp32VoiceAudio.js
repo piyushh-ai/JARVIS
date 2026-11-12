@@ -1,4 +1,4 @@
-function audioError(message, statusCode) {\n  const error = new Error(message);\n  error.statusCode = statusCode;\n  return error;\n}
+function audioError(message, statusCode) {\n  const error = new Error(message);\n  error.name = "VoiceAudioError";\n  error.statusCode = statusCode;\n  return error;\n}
 
 const TARGET_PEAK = 23000;
 const MAX_GAIN = 40;
