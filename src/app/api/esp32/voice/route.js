@@ -95,7 +95,7 @@ export async function POST(request) {
     const transcription = await transcribeAudioBuffer(audioBytes, contentType);
     const transcript = transcription.transcript || "";
     const safeTranscription = {
-      ...safeTranscription,
+      ...transcription,
       transcript: redactSpokenPin(transcript),
     };
     if (!transcript) {
