@@ -13,7 +13,7 @@ import { parseAndPrepareVoiceWav } from "@/services/ai/esp32VoiceAudio";
 import { getCachedVoiceCatalog, setCachedVoiceCatalog } from "@/services/ai/esp32VoiceCache";
 import { loadEsp32VoiceSession, persistEsp32VoiceTurn, refreshEsp32VoiceSummary } from "@/services/ai/esp32VoiceSessionService";
 import { claimPendingCommands } from "@/services/commandService";
-import { normalizeVoiceText as normalizeText, findWakeWord, parseFollowupAction, detectExplicitAction, hasConflictingExplicitActions, toInlineVoiceCommands, makeVoiceResponseData } from "@/services/ai/esp32VoiceLogic";
+import { normalizeVoiceText as normalizeText, findWakeWord, parseFollowupAction, detectExplicitAction, hasConflictingExplicitActions, resolveClarificationFollowup, toInlineVoiceCommands, makeVoiceResponseData } from "@/services/ai/esp32VoiceLogic";
 
 export const maxDuration = 30;
 // Keep this aligned with the MongoDB Atlas cluster's region.
@@ -257,9 +257,8 @@ export async function POST(request) {
     timingsMs.gemini = Date.now() - geminiStarted;
 
     const transcript = String(parsed.transcript || "").trim().slice(0, 1500);
-    const quickAction = pending && Date.now() - new Date(pending.createdAt || 0).getTime() <= 30000
-      ? parseFollowupAction(transcript) : null;
-    const clarificationFollowup = Boolean(quickAction && (pending.deviceId || pending.sceneId));
+    const followup = resolveClarificationFollowup(transcript, pending);
+    const clarificationFollowup = Boolean(followup);
     const explicitAction = detectExplicitAction(transcript);
     const explicitOnAndOff = hasConflictingExplicitActions(transcript);
     if (explicitOnAndOff) {
@@ -272,7 +271,7 @@ export async function POST(request) {
     if (clarificationFollowup) {
       parsed = {
         ...parsed, kind: "command", actionConfidence: "high", clarification: null,
-        actions: [{ ...(pending.deviceId ? { deviceId: pending.deviceId } : { sceneId: pending.sceneId }), action: quickAction }],
+        actions: [{ ...(followup.deviceId ? { deviceId: followup.deviceId } : { sceneId: followup.sceneId }), action: followup.action }],
         reply: "",
       };
     }
