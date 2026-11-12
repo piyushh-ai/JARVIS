@@ -600,3 +600,13 @@ Measured against live `next start` (`Next.js 16.4.6`) + MongoDB Atlas WAN over `
 
 - **Dynamic Scene Resolution (`src/lib/scenes/sceneDefinitions.js`, `src/services/sceneService.js`):** Defines `good_morning` (`Main Light` & `Mandir Light` -> `on`), `good_night` (all Home devices -> `off`), `away_mode` (all Home devices -> `off`), `all_lights_on` (`type === "light"` -> `on`), and `all_lights_off` (`type === "light"` -> `off`). Queries MongoDB `Device.find({ homeId })` dynamically per invocation and dispatches concurrently through `toggleDeviceById` via `Promise.allSettled` so controller status, relay mapping, Home authorization, and `Command` queue invariants hold without ever mutating `reportedState`.
 - **Partial Failures & Duplicate Guard:** Returns structured per-device results (HTTP `201` on full queue, `200` on full idempotent replay, `207` on partial queue/missing-device or mapping failure, `422` when all targets fail), uses deterministic per-device `idempotencyKey` retries alongside an atomic `2500 ms` distributed lock in `RateLimit` (`scene_exec:${homeId}:${sceneId}`, HTTP `409` on duplicate triggers), and integrates with `SmartScenesSection.jsx` + `useDevices().applySceneOutcome` for loading/cooldown UX and live ESP32 ACK reconciliation.
+
+
+### ESP32 Microphone Voice Input — Phase 1
+
+- Added `POST /api/esp32/voice` as a Node.js Route Handler authenticated with the existing `X-Device-Id` + Bearer controller credentials.
+- The route checks that the active controller is linked to a Home and that its registered `ownerId` still has the owner role for that Home.
+- Raw audio is read with a streaming 384 KB cap, kept in memory only, and sent to Gemini `generateContent` using the server-only `GEMINI_API_KEY`. Default transcription model: `gemini-2.5-flash`; optional override: `GEMINI_STT_MODEL`.
+- Per-controller voice requests are rate-limited. The route accepts raw audio bytes (not JSON/multipart), returns a transcript, and does not persist or log audio.
+- **Security boundary:** this phase is transcription-only. Controller authentication is not human speaker authentication. The endpoint deliberately does not call `runAssistantTurn`, invoke AI tools, enqueue commands, or actuate relays. Before enabling spoken device control, add verified human identity (speaker enrollment plus PIN/phone confirmation fallback) and pass the verified user ID to the existing assistant service.
+- Firmware integration and end-to-end audio testing remain pending. Supported request formats and the raw-body contract are documented in `docs/ESP32_VOICE.md`.
