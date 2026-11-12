@@ -13,7 +13,7 @@ import { parseAndPrepareVoiceWav } from "@/services/ai/esp32VoiceAudio";
 import { getCachedVoiceCatalog, setCachedVoiceCatalog } from "@/services/ai/esp32VoiceCache";
 import { loadEsp32VoiceSession, persistEsp32VoiceTurn, refreshEsp32VoiceSummary } from "@/services/ai/esp32VoiceSessionService";
 import { claimPendingCommands } from "@/services/commandService";
-import { normalizeVoiceText as normalizeText, findWakeWord, parseFollowupAction, detectExplicitAction, hasConflictingExplicitActions, resolveClarificationFollowup, toInlineVoiceCommands, makeVoiceResponseData } from "@/services/ai/esp32VoiceLogic";
+import { normalizeVoiceText as normalizeText, findWakeWord, detectExplicitAction, hasConflictingExplicitActions, resolveClarificationFollowup, toInlineVoiceCommands, makeVoiceResponseData } from "@/services/ai/esp32VoiceLogic";
 
 export const maxDuration = 30;
 // Keep this aligned with the MongoDB Atlas cluster's region.
