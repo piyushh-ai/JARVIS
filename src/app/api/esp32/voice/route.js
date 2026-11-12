@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { handleApiError, ServiceError, successResponse } from "@/lib/utils/apiResponse";
+import { enforceRateLimit } from "@/lib/utils/rateLimit";
 import { withNoStore } from "@/lib/auth/guards";
 import { authenticateEsp32Request } from "@/services/hardwareService";
 import { verifyHomeMembership } from "@/services/ai/homeContextService";
