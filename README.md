@@ -336,13 +336,11 @@ A reusable client API layer connects future UI views to the Next.js Route Handle
 
 ### ESP32 microphone voice control (INMP441)
 
-The ESP32 microphone path uses the same controller token and Home-scoped assistant services as dashboard commands. Configure `ESP32_VOICE_PIN` as a server-only 6–8 digit secret in Vercel before enabling spoken relay commands. Speak: **“Jarvis, PIN 123456, main light on kar do.”** Replace the example digits with your configured PIN. The PIN phrase is stripped before the command enters conversation memory and is redacted from the ESP32 response.
+Firmware v1.5.0 uploads 8 kHz mono PCM16 WAV (0.5–4 seconds, maximum 256 KB) to `POST /api/esp32/voice`. The server uses one Gemini audio-understanding call with a lean Home device/room/scene catalog, validates every returned target against that Home, and queues commands through the existing device/scene services. Questions use the existing assistant service; direct commands do not require a second LLM call.
 
-This is a prototype second factor, not speaker biometrics. Voice commands are attributed to the controller's registered Home owner. Anyone who knows or overhears the PIN may use it; do not use it for locks, alarms, or safety-critical devices. Gemini receives the spoken PIN as part of the audio transcription request. Without `ESP32_VOICE_PIN`, the route remains transcript-only.
+There is no spoken PIN. The wake-word gate defaults to `jarvis` and is enabled by default. Configure `ESP32_VOICE_WAKE_WORD` (default `jarvis`) and `ESP32_VOICE_REQUIRE_WAKE_WORD` (default `true`) in Vercel. Common wake-word mishearings are accepted. Missing wake word and unintelligible/background audio return HTTP 200 with `execution: "ignored"`; ambiguous targets return `needs_clarification`.
 
-**Current mic capture:** INMP441, 8 kHz mono PCM16 WAV, 3-second clip, provisional RMS trigger, 30-second firmware cooldown. This is not a real wake-word/VAD system and may miss the first syllable. The existing relay pins and HTTPS/NVS/ACK flow are preserved. Amplifier/speaker playback is not included; assistant replies are printed to Serial Monitor and returned as API data.
-
-See [ESP32 Voice Control](docs/ESP32_VOICE.md) and the [Final Phase-1 Test Plan](docs/FINAL_TEST_PLAN.md).
+The endpoint keeps the existing `X-Device-Id` + Bearer-token authentication and Home-scoped command queue. See [ESP32 Voice Control](docs/ESP32_VOICE.md).
 
 ## Available Scripts
 
