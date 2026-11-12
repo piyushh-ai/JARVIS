@@ -172,7 +172,7 @@ async function callGemini({ audio, catalog, session, models, deadline }) {
         const providerMessage = String(payload?.error?.message || "Unknown Gemini provider error");
         const sanitized = providerMessage
           .replaceAll(apiKey, "[REDACTED_API_KEY]")
-          .replace(/Bearer\\s+[^\\s]+/gi, "Bearer [REDACTED]")
+          .replace(/Bearer\s+[^\s]+/gi, "Bearer [REDACTED]")
           .slice(0, 500);
         console.error("[ESP32 voice] Gemini HTTP error", {
           model, status: response.status, providerCode: payload?.error?.code,
