@@ -201,6 +201,7 @@ async function summarizeWithGemini(previousSummary, olderText) {
 
 function responseData(controller, values, startedAt, timingsMs) {
   timingsMs.total = Date.now() - startedAt;
+  console.log("[ESP32 voice] stage timings", { serverMs: timingsMs.total, timingsMs });
   return withNoStore(successResponse(
     "Voice request processed",
     makeVoiceResponseData(controller, values, timingsMs.total, timingsMs)
