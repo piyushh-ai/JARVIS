@@ -1,5 +1,6 @@
 import { connectDB } from "@/lib/db/connect";
 import Conversation from "@/models/Conversation";
+import { isVoiceSessionActive } from "@/services/ai/esp32VoiceLogic";
 
 const MAX_IDLE_MIN = 120;
 const MAX_MESSAGES = 100;
