@@ -374,7 +374,7 @@ export async function POST(request) {
           controllerId: controller.esp32DeviceId, transcript: commandTranscript || transcript,
           reply, actions: actionRecords, pendingClarification: null, pinnedCount: session.conversation?.pinnedMessages?.length || 0,
         });
-        if (session.conversation?.messageCount > 16) {
+        if (session.conversation?.messageCount > 32) {
           await refreshEsp32VoiceSummary({
             sessionId: session.conversation._id, userId: String(controller.ownerId), homeId,
             controllerId: controller.esp32DeviceId, summarize: summarizeWithGemini,
