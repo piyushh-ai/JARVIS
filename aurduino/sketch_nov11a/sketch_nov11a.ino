@@ -54,7 +54,7 @@ const char* SERVER_BASE =
 
 const char* DEVICE_ID = "ESP32-001";
 
-const char* FIRMWARE_VERSION = "1.2.0";
+const char* FIRMWARE_VERSION = "1.3.0";
 
 // ============================================================
 // 3. RELAY CONFIGURATION
