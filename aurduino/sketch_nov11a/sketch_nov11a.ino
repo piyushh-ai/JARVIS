@@ -37,13 +37,13 @@
 #include <time.h>
 #include <math.h>
 #include "driver/i2s.h"
+#include "secrets.h"
 
 // ============================================================
 // 1. WIFI CONFIGURATION
 // ============================================================
 
-const char* WIFI_SSID = "YOUR_WIFI_NAME";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+// Credentials are stored locally in secrets.h (never commit that file).
 
 // ============================================================
 // 2. SERVER CONFIGURATION
@@ -93,18 +93,39 @@ constexpr int MIC_DATA_PIN = 33;
 constexpr uint32_t MIC_SAMPLE_RATE = 8000;
 constexpr size_t MIC_BUFFER_SAMPLES = 256;
 constexpr uint32_t MIC_REPORT_INTERVAL_MS = 500;
-constexpr uint32_t MIC_VOICE_THRESHOLD = 260; // Tune from Serial RMS readings
+constexpr int MIC_GAIN_SHIFT = 4; // Smaller number = more gain; larger = less gain.
+// Runtime threshold is calibrated from the first 60 microphone chunks.
+uint32_t micThreshold = 3000;
+constexpr uint8_t MIC_VOICE_REQUIRED_CHUNKS = 3;
 constexpr uint32_t MIC_RECORD_SECONDS = 3;
 constexpr size_t MIC_RECORD_SAMPLES = MIC_SAMPLE_RATE * MIC_RECORD_SECONDS;
-constexpr uint32_t MIC_UPLOAD_COOLDOWN_MS = 30000;
+constexpr size_t MIC_PRE_ROLL_SAMPLES = MIC_SAMPLE_RATE / 2; // 500 ms
+constexpr uint32_t MIC_UPLOAD_COOLDOWN_MS = 5000; // Testing only; restore 30000 after tuning.
 
 int32_t micRawBuffer[MIC_BUFFER_SAMPLES];
+int16_t micPreRollBuffer[MIC_PRE_ROLL_SAMPLES];
+size_t micPreRollWriteIndex = 0;
+size_t micPreRollCount = 0;
+uint8_t micVoiceConsecutiveChunks = 0;
 uint8_t micWavBuffer[44 + MIC_RECORD_SAMPLES * 2];
 bool micReady = false;
 bool micUploadInProgress = false;
 unsigned long lastMicReportMs = 0;
 unsigned long lastVoiceUploadMs = 0;
 uint32_t micLastLevel = 0;
+float micDcOffset = 0.0f;
+bool micDcInit = false;
+constexpr uint8_t MIC_CALIBRATION_CHUNKS = 60; // Approximately 2 seconds at 8 kHz / 256 samples.
+uint8_t micCalibrationChunks = 0;
+uint64_t micCalibrationRmsSum = 0;
+
+inline int16_t micToPcm16(int32_t raw) {
+  int32_t sample = (raw >> 8) - (int32_t)micDcOffset;
+  int32_t value = sample >> MIC_GAIN_SHIFT;
+  if (value > 32767) value = 32767;
+  if (value < -32768) value = -32768;
+  return (int16_t)value;
+}
 
 
 // ============================================================
@@ -274,6 +295,8 @@ void rememberProcessedCommand(
 
 bool initializeMicrophone() {
   i2s_config_t config = {};
+  // If RMS stays at 0 or does not change when speaking, try ONLY_RIGHT;
+  // the INMP441 L/R pin must match the selected I2S channel.
   config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX);
   config.sample_rate = MIC_SAMPLE_RATE;
   config.bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT;
@@ -310,7 +333,7 @@ bool initializeMicrophone() {
 }
 
 void processMicrophone() {
-  if (!micReady) return;
+  if (!micReady || micUploadInProgress) return;
 
   size_t bytesRead = 0;
   esp_err_t result = i2s_read(
@@ -324,38 +347,98 @@ void processMicrophone() {
   if (result != ESP_OK || bytesRead < sizeof(int32_t)) return;
 
   const size_t samplesRead = bytesRead / sizeof(int32_t);
-  uint64_t sumSquares = 0;
-
+  int64_t rawSum = 0;
   for (size_t i = 0; i < samplesRead; i++) {
-    // INMP441 24-bit audio is carried in a 32-bit I2S slot.
-    int32_t sample = micRawBuffer[i] >> 14;
-    int64_t value = sample;
-    sumSquares += (uint64_t)(value * value);
+    rawSum += (micRawBuffer[i] >> 8);
+  }
+  const float chunkMean = (float)rawSum / (float)samplesRead;
+  if (!micDcInit) {
+    micDcOffset = chunkMean;
+    micDcInit = true;
+  } else {
+    micDcOffset = 0.95f * micDcOffset + 0.05f * chunkMean;
   }
 
-  uint32_t rms = (uint32_t)sqrt((double)sumSquares / samplesRead);
+  uint64_t sumSquares = 0;
+  int32_t peak = 0;
+
+  for (size_t i = 0; i < samplesRead; i++) {
+    int32_t centered = (micRawBuffer[i] >> 8) - (int32_t)micDcOffset;
+    int64_t value = centered;
+    sumSquares += (uint64_t)(value * value);
+    int32_t magnitude = centered < 0 ? -centered : centered;
+    if (magnitude > peak) peak = magnitude;
+
+    // Retain the latest 500 ms, with DC removal and adjustable gain.
+    micPreRollBuffer[micPreRollWriteIndex] = micToPcm16(micRawBuffer[i]);
+    micPreRollWriteIndex = (micPreRollWriteIndex + 1) % MIC_PRE_ROLL_SAMPLES;
+    if (micPreRollCount < MIC_PRE_ROLL_SAMPLES) micPreRollCount++;
+  }
+
+  uint32_t rms = (uint32_t)sqrt((double)sumSquares / (double)samplesRead);
   micLastLevel = rms;
+
+  // Calibrate ambient noise before enabling the voice gate.
+  if (micCalibrationChunks < MIC_CALIBRATION_CHUNKS) {
+    micCalibrationRmsSum += rms;
+    micCalibrationChunks++;
+    if (micCalibrationChunks == MIC_CALIBRATION_CHUNKS) {
+      uint32_t noiseFloor = (uint32_t)(micCalibrationRmsSum / MIC_CALIBRATION_CHUNKS);
+      uint32_t tripleFloor = noiseFloor * 3U;
+      uint32_t offsetFloor = noiseFloor + 800U;
+      micThreshold = tripleFloor > offsetFloor ? tripleFloor : offsetFloor;
+      Serial.printf("[MIC] Noise floor=%u -> threshold=%u\n", noiseFloor, micThreshold);
+    }
+    return;
+  }
 
   if (millis() - lastMicReportMs >= MIC_REPORT_INTERVAL_MS) {
     lastMicReportMs = millis();
-    Serial.print("[MIC] RMS level: ");
-    Serial.print(rms);
-    Serial.print(" | ");
-    Serial.println(rms >= MIC_VOICE_THRESHOLD ? "VOICE/LOUD SOUND" : "quiet");
+    Serial.printf(
+      "[MIC] RMS=%u peak=%d dc=%d thr=%u | %s\n",
+      rms,
+      (int)peak,
+      (int)micDcOffset,
+      micThreshold,
+      rms >= micThreshold ? "LOUD" : "quiet"
+    );
   }
 
-  // Provisional sound-level trigger; this is not a wake-word detector.
+  if (rms >= micThreshold) {
+    if (micVoiceConsecutiveChunks < MIC_VOICE_REQUIRED_CHUNKS) {
+      micVoiceConsecutiveChunks++;
+    }
+  } else {
+    micVoiceConsecutiveChunks = 0;
+  }
+
+  // This is a sustained-sound gate, not true Jarvis wake-word recognition.
   if (
-    rms >= MIC_VOICE_THRESHOLD &&
+    micVoiceConsecutiveChunks >= MIC_VOICE_REQUIRED_CHUNKS &&
     !micUploadInProgress &&
     millis() - lastVoiceUploadMs >= MIC_UPLOAD_COOLDOWN_MS
   ) {
+    micVoiceConsecutiveChunks = 0;
     lastVoiceUploadMs = millis();
     if (WiFi.status() == WL_CONNECTED && clockSynced && httpsReady) {
       captureAndUploadVoice();
     } else {
       Serial.println("[VOICE] Sound detected, but network is not ready");
     }
+  }
+}
+
+// Dedicated microphone task: keeps I2S sampling independent from the
+// main loop's HTTPS polling/heartbeat requests. Voice upload runs here
+// with its own HTTP/TLS client so it cannot race the main HTTP client.
+void microphoneTask(void* parameter) {
+  (void)parameter;
+  Serial.println("[MIC] Continuous microphone task started");
+  for (;;) {
+    if (micReady) {
+      processMicrophone();
+    }
+    vTaskDelay(pdMS_TO_TICKS(2));
   }
 }
 
@@ -395,11 +478,28 @@ bool captureAndUploadVoice() {
   if (!micReady || micUploadInProgress) return false;
   micUploadInProgress = true;
 
-  Serial.println("[VOICE] Capturing 3-second audio...");
+  Serial.println("[VOICE] Capturing 3-second audio (500ms pre-roll included)...");
   const size_t targetBytes = MIC_RECORD_SAMPLES * sizeof(int16_t);
-  size_t writtenSamples = 0;
-  const unsigned long captureStarted = millis();
 
+  // Copy pre-roll oldest-to-newest so the first spoken syllable is retained.
+  size_t preRollSamples = micPreRollCount;
+  size_t oldestIndex =
+    (micPreRollWriteIndex + MIC_PRE_ROLL_SAMPLES - preRollSamples) %
+    MIC_PRE_ROLL_SAMPLES;
+  size_t writtenSamples = 0;
+  int32_t recordedPeak = 0;
+
+  for (size_t i = 0; i < preRollSamples && writtenSamples < MIC_RECORD_SAMPLES; i++) {
+    int16_t pcm = micPreRollBuffer[(oldestIndex + i) % MIC_PRE_ROLL_SAMPLES];
+    int32_t magnitude = pcm < 0 ? -(int32_t)pcm : (int32_t)pcm;
+    if (magnitude > recordedPeak) recordedPeak = magnitude;
+    size_t offset = 44 + writtenSamples * 2;
+    micWavBuffer[offset] = (uint16_t)pcm & 0xFF;
+    micWavBuffer[offset + 1] = ((uint16_t)pcm >> 8) & 0xFF;
+    writtenSamples++;
+  }
+
+  const unsigned long captureStarted = millis();
   while (writtenSamples < MIC_RECORD_SAMPLES &&
          millis() - captureStarted < 6000) {
     size_t bytesRead = 0;
@@ -415,8 +515,10 @@ bool captureAndUploadVoice() {
 
     size_t count = bytesRead / sizeof(int32_t);
     for (size_t i = 0; i < count && writtenSamples < MIC_RECORD_SAMPLES; i++) {
-      // Convert the INMP441's left-aligned 24-bit sample to signed PCM16.
-      int16_t pcm = (int16_t)(micRawBuffer[i] >> 16);
+      // Convert the INMP441's 24-bit sample to gain-adjusted PCM16.
+      int16_t pcm = micToPcm16(micRawBuffer[i]);
+      int32_t magnitude = pcm < 0 ? -(int32_t)pcm : (int32_t)pcm;
+      if (magnitude > recordedPeak) recordedPeak = magnitude;
       size_t offset = 44 + writtenSamples * 2;
       micWavBuffer[offset] = (uint16_t)pcm & 0xFF;
       micWavBuffer[offset + 1] = ((uint16_t)pcm >> 8) & 0xFF;
@@ -432,28 +534,35 @@ bool captureAndUploadVoice() {
   }
 
   writeWavHeader(micWavBuffer, targetBytes);
+  Serial.printf("[VOICE] Peak of recorded clip: %d\n", (int)recordedPeak);
+  Serial.printf("[VOICE] heap=%u\n", (unsigned)ESP.getFreeHeap());
 
   String url = String(SERVER_BASE) + "/api/esp32/voice";
-  http.setReuse(false);
-  http.setTimeout(25000);
-  http.setConnectTimeout(8000);
+  WiFiClientSecure voiceSecureClient;
+  HTTPClient voiceHttp;
+  voiceSecureClient.setCACert(ROOT_CA);
+  voiceSecureClient.setTimeout(25000);
+  voiceSecureClient.setHandshakeTimeout(10);
+  voiceHttp.setReuse(false);
+  voiceHttp.setTimeout(25000);
+  voiceHttp.setConnectTimeout(8000);
 
-  if (!http.begin(secureClient, url)) {
+  if (!voiceHttp.begin(voiceSecureClient, url)) {
     Serial.println("[VOICE] HTTPS begin failed");
     micUploadInProgress = false;
     return false;
   }
 
-  http.addHeader("X-Device-Id", DEVICE_ID);
-  http.addHeader("Authorization", String("Bearer ") + deviceToken);
-  http.addHeader("Content-Type", "audio/wav");
-  http.addHeader("Accept", "application/json");
+  voiceHttp.addHeader("X-Device-Id", DEVICE_ID);
+  voiceHttp.addHeader("Authorization", String("Bearer ") + deviceToken);
+  voiceHttp.addHeader("Content-Type", "audio/wav");
+  voiceHttp.addHeader("Accept", "application/json");
 
   Serial.printf("[VOICE] Uploading WAV: %u bytes\n",
                 (unsigned)(44 + targetBytes));
-  int code = http.POST(micWavBuffer, 44 + targetBytes);
-  String response = code > 0 ? http.getString() : "";
-  http.end();
+  int code = voiceHttp.POST(micWavBuffer, 44 + targetBytes);
+  String response = code > 0 ? voiceHttp.getString() : "";
+  voiceHttp.end();
 
   Serial.printf("[VOICE] HTTP status: %d\n", code);
 
@@ -1330,6 +1439,22 @@ void setup() {
   micReady = initializeMicrophone();
   if (!micReady) {
     Serial.println("[MIC] Microphone unavailable; relay controller will continue.");
+  } else {
+    BaseType_t taskCreated = xTaskCreatePinnedToCore(
+      microphoneTask,
+      "JarvisMic",
+      12288,
+      nullptr,
+      2,
+      nullptr,
+      1
+    );
+    if (taskCreated == pdPASS) {
+      Serial.println("[MIC] Continuous task created on core 1");
+    } else {
+      micReady = false;
+      Serial.println("[MIC] ERROR: Could not create microphone task");
+    }
   }
 
   // Validate Wi-Fi credentials.
@@ -1395,8 +1520,8 @@ void setup() {
 
 void loop() {
 
-  // Keep sampling the INMP441 even if Wi-Fi/server is offline.
-  processMicrophone();
+  // Microphone sampling is handled by the dedicated FreeRTOS task.
+  // Keep the main loop focused on network and relay command handling.
 
   // ----------------------------------------------------------
   // WIFI
