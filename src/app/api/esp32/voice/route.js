@@ -11,7 +11,7 @@ import { authenticateEsp32Request } from "@/services/hardwareService";
 import { verifyHomeMembership } from "@/services/ai/homeContextService";
 import { parseAndPrepareVoiceWav } from "@/services/ai/esp32VoiceAudio";
 import { getCachedVoiceCatalog, setCachedVoiceCatalog } from "@/services/ai/esp32VoiceCache";
-import { loadEsp32VoiceSession, persistEsp32VoiceTurn, refreshEsp32VoiceSummary } from "@/services/ai/esp32VoiceSessionService";
+import { loadEsp32VoiceSession, persistEsp32VoiceTurn, refreshEsp32VoiceSummary, getCachedVoiceSessionHint } from "@/services/ai/esp32VoiceSessionService";
 import { claimPendingCommands } from "@/services/commandService";
 import { normalizeVoiceText as normalizeText, findWakeWord, detectExplicitAction, hasConflictingExplicitActions, parseDeterministicVoiceCommand, resolveClarificationFollowup, toInlineVoiceCommands, makeVoiceResponseData } from "@/services/ai/esp32VoiceLogic";
 
@@ -105,7 +105,7 @@ function makeWhisperPrompt(catalog) {
 }
 function isLatinTranscript(value){return !/[\u0900-\u097F\u0600-\u06FF]/u.test(String(value||""));}
 function isPromptEcho(transcript,prompt){const clean=normalizeText(transcript),expected=normalizeText(prompt);return Boolean(clean&&expected&&(clean===expected||(clean.length>35&&expected.includes(clean))));}
-async function callGroq({audio,catalog,session,deadline,wakeWindowActive=false}){
+async function callGroq({audio,catalog,session,deadline,wakeWindowActive=false,deterministicOnly=false}){
  const apiKey=process.env.GROQ_API_KEY?.trim();if(!apiKey)throw new ServiceError("GROQ_API_KEY is not configured",503);
  const sttModel=process.env.GROQ_STT_MODEL?.trim()||"whisper-large-v3",chatModel=process.env.GROQ_MODEL?.trim()||"qwen/qwen3.8-27b",prompt=makeWhisperPrompt(catalog);
  const transcribe=async(language)=>{
@@ -138,6 +138,13 @@ async function callGroq({audio,catalog,session,deadline,wakeWindowActive=false})
  if(!transcription)return {...common,kind:"none",actionConfidence:"low",actions:[],reply:""};
  if(wake.heard&&!wake.command)return {...common,kind:"wake",actionConfidence:"high",actions:[],reply:"Haan, boliye"};
  if(wake.heard||wakeWindowActive||(process.env.ESP32_VOICE_REQUIRE_WAKE_WORD??"true").trim().toLowerCase()==="false"){const direct=parseDeterministicVoiceCommand(wake.heard?wake.command:transcription,catalog);if(direct)return {...common,...direct};}
+ if(deterministicOnly)return {...common,kind:"unknown",actionConfidence:"low",actions:[],reply:""};
+ return await interpretGroqTranscript({transcription,catalog,session,deadline,common,wake});
+}
+
+async function interpretGroqTranscript({transcription,catalog,session,deadline,common,wake}){
+ const apiKey=process.env.GROQ_API_KEY?.trim();if(!apiKey)throw new ServiceError("GROQ_API_KEY is not configured",503);
+ const chatModel=process.env.GROQ_MODEL?.trim()||"qwen/qwen3.8-27b";
  const remaining=Math.min(8000,deadline-Date.now());if(remaining<=0)throw new ServiceError("Voice analysis timed out. Please retry.",504);
  const schema='Return JSON only: {"transcript":"string","wakeWordHeard":boolean,"kind":"command|question|none","actionConfidence":"high|low","actions":[{"deviceId":"string|null","sceneId":"string|null","action":"on|off"}],"clarification":"string|null","clarificationTarget":{"deviceId":"string|null","sceneId":"string|null","targetName":"string|null"}|null,"reply":"string"}. Never guess IDs.';
  let response;
@@ -149,6 +156,7 @@ async function callGroq({audio,catalog,session,deadline,wakeWindowActive=false})
  if(!["command","question","none"].includes(parsed.kind)||!Array.isArray(parsed.actions)||!["high","low"].includes(parsed.actionConfidence))throw new ServiceError("Groq returned an incomplete voice response.",502);
  return {...common,...parsed,transcript:transcription,wakeWordHeard:wake.heard,clarification:typeof parsed.clarification==="string"?parsed.clarification:null,clarificationTarget:parsed.clarificationTarget||null,reply:typeof parsed.reply==="string"?parsed.reply:""};
 }
+
 
 async function summarizeWithGroq(previousSummary, olderText) {
   const apiKey = process.env.GROQ_API_KEY?.trim();
@@ -202,9 +210,7 @@ export async function POST(request) {
     const contentType = (request.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
     if (contentType !== "audio/wav" && contentType !== "audio/x-wav") throw new ServiceError("Content-Type must be audio/wav", 415);
     const homeId = String(controller.homeId);
-    const sessionPromise = loadEsp32VoiceSession({
-      userId: String(controller.ownerId), homeId, controllerId: controller.esp32DeviceId,
-    });
+    const sessionHint = getCachedVoiceSessionHint({ userId: String(controller.ownerId), homeId, controllerId: controller.esp32DeviceId });
     const decodeStarted = Date.now();
     const catalogStarted = Date.now();
     const decodePromise = (async () => {
@@ -217,20 +223,39 @@ export async function POST(request) {
       timingsMs.catalog = Date.now() - catalogStarted;
       return value;
     });
-    const [audio, catalog, session] = await Promise.all([decodePromise, catalogPromise, sessionPromise]);
+    const [audio, catalog] = await Promise.all([decodePromise, catalogPromise]);
+    let session = null;
     // Record stable stage durations using the completed parallel stage's wall time.
     // Per-stage CPU work is small; database and audio preparation overlap by design.
     const wakeRequired = (process.env.ESP32_VOICE_REQUIRE_WAKE_WORD ?? "true").trim().toLowerCase() !== "false";
-    const wakeWindowActive = Boolean(session.conversation?.lastMessageAt && Date.now() - new Date(session.conversation.lastMessageAt).getTime() <= 12000);
+    const wakeWindowActive = Boolean(sessionHint?.lastMessageAt && Date.now() - new Date(sessionHint.lastMessageAt).getTime() <= 12000);
     const deadline = Date.now() + GROQ_TIMEOUT_MS;
     // Groq Whisper transcribes the WAV; Groq Qwen interprets the transcript and selects safe actions.
-    const pending = session.pendingClarification;
+    const pending = sessionHint?.pendingClarification || null;
     const groqStarted = Date.now();
-    let parsed = await callGroq({ audio, catalog, session, deadline, wakeWindowActive });
+    let parsed = await callGroq({ audio, catalog, session: { summary: "", context: [] }, deadline, wakeWindowActive, deterministicOnly: true });
     timingsMs.groq = Date.now() - groqStarted;
 
     const transcript = String(parsed.transcript || "").trim().slice(0, 1500);
-    const followup = resolveClarificationFollowup(transcript, pending);
+    const earlyWake = findWakeWord(transcript);
+    const pendingFollowup = resolveClarificationFollowup(transcript, pending);
+    const directCommand = earlyWake.heard ? parseDeterministicVoiceCommand(earlyWake.command, catalog) : null;
+    if (pendingFollowup) {
+      parsed = { ...parsed, kind: "command", actionConfidence: "high", clarification: null,
+        actions: [{ ...(pendingFollowup.deviceId ? { deviceId: pendingFollowup.deviceId } : { sceneId: pendingFollowup.sceneId }), action: pendingFollowup.action }], reply: "" };
+    } else if (directCommand) {
+      parsed = { ...parsed, ...directCommand, transcript };
+    } else if (earlyWake.heard && !earlyWake.command) {
+      parsed = { ...parsed, kind: "wake", actionConfidence: "high", actions: [], reply: "Haan, boliye", transcript };
+    } else if (transcript && parsed.kind !== "none") {
+      session = await loadEsp32VoiceSession({ userId: String(controller.ownerId), homeId, controllerId: controller.esp32DeviceId });
+      parsed = await interpretGroqTranscript({
+        transcription: transcript, catalog, session, deadline: Date.now() + 8000,
+        common: { transcript, wakeWordHeard: earlyWake.heard, model: parsed.model, sttLanguage: parsed.sttLanguage, wakeWordScore: earlyWake.score }, wake: earlyWake,
+      });
+      timingsMs.groq = Date.now() - groqStarted;
+    }
+    const followup = pendingFollowup;
     const clarificationFollowup = Boolean(followup);
     const explicitAction = detectExplicitAction(transcript);
     const explicitOnAndOff = hasConflictingExplicitActions(transcript);
@@ -272,13 +297,14 @@ export async function POST(request) {
     if (!transcript || parsed.kind === "none") {
       return responseData(controller, { transcript, execution: "not_executed", reason: "not_understood" }, startedAt, timingsMs);
     }
-    if (wakeRequired && !wakeWordHeard && !wakeWindowActive && !clarificationFollowup) {
+    const sessionWakeWindow = wakeWindowActive || Boolean(session?.conversation?.lastMessageAt && Date.now() - new Date(session.conversation.lastMessageAt).getTime() <= 12000);
+    if (wakeRequired && !wakeWordHeard && !sessionWakeWindow && !clarificationFollowup) {
       return responseData(controller, { transcript, execution: "ignored", reason: "wake_word_missing" }, startedAt, timingsMs);
     }
 
     if (parsed.kind === "wake") {
       const reply = "Haan, boliye";
-      after(async () => { try { await persistEsp32VoiceTurn({ sessionId: session.conversation?._id, userId: String(controller.ownerId), homeId, controllerId: controller.esp32DeviceId, transcript, reply, actions: [], pinnedCount: session.conversation?.pinnedMessages?.length || 0 }); } catch (error) { console.error("[ESP32 voice] wake session save failed", error?.message); } });
+      after(async () => { try { await persistEsp32VoiceTurn({ sessionId: session?.conversation?._id || sessionHint?.sessionId, userId: String(controller.ownerId), homeId, controllerId: controller.esp32DeviceId, transcript, reply, actions: [], pinnedCount: session?.conversation?.pinnedMessages?.length || sessionHint?.pinnedCount || 0 }); } catch (error) { console.error("[ESP32 voice] wake session save failed", error?.message); } });
       return responseData(controller, { transcript, execution: "processed", reason: "wake_word_acknowledged", reply, provider: "groq", sttLanguage: parsed.sttLanguage, wakeWordScore: wake.score }, startedAt, timingsMs);
     }
 
@@ -287,9 +313,9 @@ export async function POST(request) {
       after(async () => {
         try {
           await persistEsp32VoiceTurn({
-            sessionId: session.conversation?._id, userId: String(controller.ownerId), homeId,
+            sessionId: session?.conversation?._id || sessionHint?.sessionId, userId: String(controller.ownerId), homeId,
             controllerId: controller.esp32DeviceId, transcript: commandTranscript || transcript,
-            reply, actions: [], pinnedCount: session.conversation?.pinnedMessages?.length || 0, now: new Date(),
+            reply, actions: [], pinnedCount: session?.conversation?.pinnedMessages?.length || sessionHint?.pinnedCount || 0, now: new Date(),
           });
         } catch (error) { console.error("[ESP32 voice] conversation save failed", error?.message); }
       });
@@ -308,9 +334,9 @@ export async function POST(request) {
       after(async () => {
         try {
           await persistEsp32VoiceTurn({
-            sessionId: session.conversation?._id, userId: String(controller.ownerId), homeId,
+            sessionId: session?.conversation?._id || sessionHint?.sessionId, userId: String(controller.ownerId), homeId,
             controllerId: controller.esp32DeviceId, transcript: commandTranscript || transcript,
-            reply: question, clarification: question, pendingClarification, pinnedCount: session.conversation?.pinnedMessages?.length || 0,
+            reply: question, clarification: question, pendingClarification, pinnedCount: session?.conversation?.pinnedMessages?.length || sessionHint?.pinnedCount || 0,
           });
         } catch (error) { console.error("[ESP32 voice] clarification save failed", error?.message); }
       });
@@ -361,11 +387,11 @@ export async function POST(request) {
     after(async () => {
       try {
         const saved = await persistEsp32VoiceTurn({
-          sessionId: session.conversation?._id, userId: String(controller.ownerId), homeId,
+          sessionId: session?.conversation?._id || sessionHint?.sessionId, userId: String(controller.ownerId), homeId,
           controllerId: controller.esp32DeviceId, transcript: commandTranscript || transcript,
-          reply, actions: actionRecords, pendingClarification: null, pinnedCount: session.conversation?.pinnedMessages?.length || 0,
+          reply, actions: actionRecords, pendingClarification: null, pinnedCount: session?.conversation?.pinnedMessages?.length || sessionHint?.pinnedCount || 0,
         });
-        if (session.conversation?.messageCount >= 32) {
+        if (session?.conversation?.messageCount >= 32) {
           await refreshEsp32VoiceSummary({
             sessionId: session.conversation._id, userId: String(controller.ownerId), homeId,
             controllerId: controller.esp32DeviceId, summarize: summarizeWithGroq,

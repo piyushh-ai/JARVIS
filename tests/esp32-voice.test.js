@@ -130,3 +130,10 @@ test("deterministic parser resolves a unique fan and all lights scene", async ()
   assert.equal(parseDeterministicVoiceCommand("pankha chalao", catalog).actions[0].deviceId, "fan-1");
   assert.equal(parseDeterministicVoiceCommand("sari lights band karo", catalog).actions[0].sceneId, "all_lights_off");
 });
+
+test("voice fast path does not eagerly load Conversation for deterministic commands", async () => {
+ const route=await readFile(new URL("../src/app/api/esp32/voice/route.js",import.meta.url),"utf8");
+ assert.doesNotMatch(route,/const sessionPromise = loadEsp32VoiceSession/);
+ assert.match(route,/getCachedVoiceSessionHint/);
+ assert.match(route,/interpretGroqTranscript/);
+});

@@ -22,6 +22,5 @@ jobs:
       - run: npm run build
         env:
           MONGODB_URI: mongodb://127.0.0.1:27017/jarvis_build
-          GEMINI_API_KEY: test-placeholder
           ESP32_TOKEN_PEPPER: test-placeholder-pepper
           SESSION_SECRET: test-placeholder-session-secret
