@@ -81,7 +81,13 @@ function assertHttpsIfProxied(request) {
  */
 export async function authenticateEsp32Request(
   request,
-  { maxRequests = 120, windowMs = 60000 } = {}
+  {
+    maxRequests = 120,
+    windowMs = 60000,
+    // Override the per-device auth bucket for isolated hardware endpoints.
+    // Default preserves the existing IP+device bucket for all other routes.
+    deviceRateLimitKeyPrefix = "esp32_auth",
+  } = {}
 ) {
   assertHttpsIfProxied(request);
 
@@ -117,10 +123,15 @@ export async function authenticateEsp32Request(
       maxRequests: Math.max(maxRequests * 4, 240),
       windowMs,
     }),
-    enforceRateLimit(`esp32_auth:${clientIp}:${esp32DeviceId}`, {
-      maxRequests,
-      windowMs,
-    }),
+    enforceRateLimit(
+      deviceRateLimitKeyPrefix === "esp32_auth"
+        ? `esp32_auth:${clientIp}:${esp32DeviceId}`
+        : `${deviceRateLimitKeyPrefix}:${esp32DeviceId}`,
+      {
+        maxRequests,
+        windowMs,
+      }
+    ),
     Controller.findOne({ esp32DeviceId })
       .select(
         "_id esp32DeviceId name homeId ownerId status +tokenHash +previousTokenHash previousTokenExpiresAt"
