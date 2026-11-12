@@ -610,3 +610,12 @@ Measured against live `next start` (`Next.js 16.4.6`) + MongoDB Atlas WAN over `
 - Per-controller voice requests are rate-limited. The route accepts raw audio bytes (not JSON/multipart), returns a transcript, and does not persist or log audio.
 - **Security boundary:** this phase is transcription-only. Controller authentication is not human speaker authentication. The endpoint deliberately does not call `runAssistantTurn`, invoke AI tools, enqueue commands, or actuate relays. Before enabling spoken device control, add verified human identity (speaker enrollment plus PIN/phone confirmation fallback) and pass the verified user ID to the existing assistant service.
 - Firmware integration and end-to-end audio testing remain pending. Supported request formats and the raw-body contract are documented in `docs/ESP32_VOICE.md`.
+
+
+## ESP32 Voice Command Execution (PIN-gated prototype)
+
+The authenticated `POST /api/esp32/voice` route accepts bounded WAV audio, authenticates the registered controller, verifies that its linked owner still owns the Home, and transcribes the audio with Gemini. Spoken execution is enabled only when the transcript contains the JARVIS wake phrase and the server-only `ESP32_VOICE_PIN` (6–8 digits). The PIN is compared in constant time, stripped from the command before `runAssistantTurn`, and redacted from the response returned to the ESP32. Missing or invalid PIN fails closed and does not invoke assistant tools.
+
+The controller token is machine identity, not human identity. This prototype's PIN is a second factor and actions are attributed to the controller's registered Home owner; it is not speaker recognition and should not protect locks, alarms, or safety-critical actuators. The transcription provider receives the spoken PIN as part of the audio request. Raw audio is memory-only. Relay actuation still flows through the existing Home-scoped assistant tools, device service, command queue, ESP32 polling, and hardware ACK; `reportedState` is never optimistically set by voice transcription.
+
+Firmware captures 8 kHz mono PCM16 WAV for 3 seconds to fit ESP32-WROOM-32 internal RAM without PSRAM. RMS-triggered capture is provisional rather than a wake-word/VAD implementation, and blocking capture/upload temporarily pauses polling. Without an amplifier and speaker, assistant replies are returned as API data and printed to Serial Monitor only.
