@@ -213,7 +213,7 @@ async function summarizeWithGemini(previousSummary, olderText) {
   } catch { return previousSummary; }
 }
 
-function responseData(controller, values, startedAt, timingsMs) {
+export function toInlineVoiceCommands(claimed) {\n  return (claimed || []).map((cmd) => ({ commandId: cmd.commandId, relayNumber: cmd.relayNumber, action: cmd.action, ttlRemainingMs: cmd.ttlRemainingMs }));\n}\n\nfunction detectExplicitAction(text) {\n  const value = normalizeText(text);\n  const on = /\\b(on|chalu|start|jala do|jalao|kholo)\\b/u.test(value);\n  const off = /\\b(off|band|stop|bujha do|bujhao)\\b/u.test(value);\n  return on === off ? null : on ? "on" : "off";\n}\n\nfunction responseData(controller, values, startedAt, timingsMs) {
   timingsMs.total = Date.now() - startedAt;
   return withNoStore(successResponse("Voice request processed", {
     esp32DeviceId: controller.esp32DeviceId,
@@ -228,7 +228,7 @@ function responseData(controller, values, startedAt, timingsMs) {
   }));
 }
 
-function parseFollowupAction(text) {
+export function parseFollowupAction(text) {
   const value = normalizeText(text);
   if (/^(on|chalu|start|jala do|jalao)$/.test(value)) return "on";
   if (/^(off|band|stop|bujha do|bujhao)$/.test(value)) return "off";
@@ -239,7 +239,7 @@ export { parseAndPrepareVoiceWav };
 
 export async function POST(request) {
   const startedAt = Date.now();
-  const timingsMs = {};
+  const timingsMs = { decode: 0, auth: 0, catalog: 0, gemini: 0, execute: 0 };
   try {
     const authStarted = Date.now();
     const controller = await authenticateEsp32Request(request, {
@@ -287,7 +287,7 @@ export async function POST(request) {
     const transcript = String(parsed.transcript || "").trim().slice(0, 1500);
     const quickAction = pending && Date.now() - new Date(pending.createdAt || 0).getTime() <= 30000
       ? parseFollowupAction(transcript) : null;
-    const clarificationFollowup = Boolean(quickAction && (pending.deviceId || pending.sceneId));
+    const clarificationFollowup = Boolean(quickAction && (pending.deviceId || pending.sceneId));\n    const explicitAction = detectExplicitAction(transcript);\n    const explicitOnAndOff = /\\b(on|chalu|start|jala do|jalao|kholo)\\b/u.test(normalizeText(transcript)) && /\\b(off|band|stop|bujha do|bujhao)\\b/u.test(normalizeText(transcript));\n    if (explicitOnAndOff) {\n      parsed.actionConfidence = "low";\n      parsed.clarification = "On karun ya off?";\n      parsed.actions = [];\n    } else if (explicitAction && parsed.actions?.length) {\n      parsed.actions = parsed.actions.map((item) => ({ ...item, action: explicitAction }));\n    }
     if (clarificationFollowup) {
       parsed = {
         ...parsed, kind: "command", actionConfidence: "high", clarification: null,
