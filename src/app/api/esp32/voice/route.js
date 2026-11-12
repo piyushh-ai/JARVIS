@@ -199,7 +199,7 @@ async function summarizeWithGemini(previousSummary, olderText) {
   } catch { return previousSummary; }
 }
 
-export function toInlineVoiceCommands(claimed) {\n  return (claimed || []).map((cmd) => ({ commandId: cmd.commandId, relayNumber: cmd.relayNumber, action: cmd.action, ttlRemainingMs: cmd.ttlRemainingMs }));\n}\n\nfunction detectExplicitAction(text) {\n  const value = normalizeText(text);\n  const on = /\\b(on|chalu|start|jala do|jalao|kholo)\\b/u.test(value);\n  const off = /\\b(off|band|stop|bujha do|bujhao)\\b/u.test(value);\n  return on === off ? null : on ? "on" : "off";\n}\n\nfunction responseData(controller, values, startedAt, timingsMs) {
+function responseData(controller, values, startedAt, timingsMs) {
   timingsMs.total = Date.now() - startedAt;
   return withNoStore(successResponse(
     "Voice request processed",
