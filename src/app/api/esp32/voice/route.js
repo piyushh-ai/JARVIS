@@ -40,7 +40,7 @@ function safeEqualPin(candidate, expected) {
 
 function redactSpokenPin(transcript) {
   return String(transcript || "").replace(
-    /((?:pin|पिन)[^\\d]{0,16})\\d{6,8}/gi,
+    /((?:pin|पिन)[^\d]{0,16})\d{6,8}/gi,
     "$1[REDACTED]"
   );
 }
