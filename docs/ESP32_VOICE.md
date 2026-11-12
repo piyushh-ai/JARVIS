@@ -166,3 +166,16 @@ Hardware acceptance sequence:
 ## Privacy boundary
 
 Audio is processed in memory and sent to Gemini for understanding. Ignored audio is not saved to voice conversation memory. Voice sessions are scoped to the authenticated controller, owner, and Home. The wake word does not identify the speaker.
+
+### Gemini HTTP 502 diagnostics
+
+The ESP32 may report HTTP 502 when Gemini rejects a voice request or returns an unusable candidate. Inspect Vercel **Functions / Runtime Logs** and filter for `[ESP32 voice] Gemini`. The route now logs the model, upstream HTTP status, provider error code/status, and a redacted/truncated diagnostic message. It also reports blocked/empty candidates and malformed structured JSON without logging uploaded audio or transcripts.
+
+- Upstream **400**: inspect Gemini generation configuration and supported response schema.
+- Upstream **401/403**: check the server-side `GEMINI_API_KEY` and project permissions.
+- Upstream **404**: check `GEMINI_VOICE_MODEL` and `GEMINI_VOICE_FALLBACK_MODEL` availability.
+- Upstream **429**: check Gemini quota/rate limits; the route returns a retryable 503.
+- Upstream **5xx**: likely a temporary provider failure.
+- Empty candidate: check the logged `finishReason` and `blockReason`.
+
+Do not post API keys, Bearer tokens, or full request bodies in bug reports. The route keeps existing ESP32 authentication, wake-word checks, and response execution values unchanged.
