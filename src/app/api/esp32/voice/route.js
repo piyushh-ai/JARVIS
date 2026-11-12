@@ -388,6 +388,6 @@ export async function POST(request) {
     }, startedAt, timingsMs);
   } catch (error) {
     console.error("[ESP32 voice] request failed", { totalMs: Date.now() - startedAt, status: error?.statusCode || 500, message: error?.message });
-    return withNoStore(handleApiError(error));
+    const apiError = error?.name === "VoiceAudioError" ? new ServiceError(error.message, error.statusCode || 400) : error;\n    return withNoStore(handleApiError(apiError));
   }
 }
