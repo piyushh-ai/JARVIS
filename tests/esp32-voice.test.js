@@ -105,3 +105,14 @@ test("voice route atomically claims queued commands via the same pending-command
   assert.match(commandService, /status: "processing"/);
   assert.match(commandService, /processingUntil: leaseUntil/);
 });
+
+
+test("voice route reports sanitized Gemini provider diagnostics", async () => {
+  const route = await readFile(new URL("../src/app/api/esp32/voice/route.js", import.meta.url), "utf8");
+  assert.match(route, /Gemini HTTP error/);
+  assert.match(route, /REDACTED_API_KEY/);
+  assert.match(route, /finishReason/);
+  assert.match(route, /blockReason/);
+  assert.match(route, /Gemini is rate limited/);
+  assert.match(route, /Gemini voice model is unavailable/);
+});
