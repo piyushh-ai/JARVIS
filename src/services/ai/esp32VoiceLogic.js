@@ -17,8 +17,8 @@ export function findWakeWord(text) {
 
 export function parseFollowupAction(text) {
   const value = normalizeVoiceText(text);
-  if (/^(on|chalu|start|jala do|jalao)$/.test(value)) return "on";
-  if (/^(off|band|stop|bujha do|bujhao)$/.test(value)) return "off";
+  if (/^(on|on kar do|chalu|chalu kar do|start|start karo|jala do|jalao)$/.test(value)) return "on";
+  if (/^(off|off kar do|band|band kar do|stop|stop karo|bujha do|bujhao)$/.test(value)) return "off";
   return null;
 }
 
