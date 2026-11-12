@@ -38,6 +38,13 @@ function safeEqualPin(candidate, expected) {
   return crypto.timingSafeEqual(a, b);
 }
 
+function redactSpokenPin(transcript) {
+  return String(transcript || "").replace(
+    /((?:pin|पिन)[^\\d]{0,16})\\d{6,8}/gi,
+    "$1[REDACTED]"
+  );
+}
+
 function extractVoiceCommand(transcript, expectedPin) {
   const normalized = String(transcript || "").trim();
   if (!/(?:\bjarvis\b|जार्विस)/i.test(normalized)) {
