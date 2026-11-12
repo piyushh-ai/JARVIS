@@ -42,8 +42,8 @@
 // 1. WIFI CONFIGURATION
 // ============================================================
 
-const char* WIFI_SSID = "Airtel_sant_4785";
-const char* WIFI_PASSWORD = "Air@61755";
+const char* WIFI_SSID = "YOUR_WIFI_NAME";
+const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 
 // ============================================================
 // 2. SERVER CONFIGURATION
@@ -84,9 +84,9 @@ bool relayStates[RELAY_COUNT] = {
 // SCK/BCLK -> GPIO26, WS/LRCLK -> GPIO25
 // SD/DOUT -> GPIO33, L/R -> GND (LEFT channel)
 //
-// This firmware captures mic audio locally and reports a level
-// to Serial Monitor. It does NOT upload audio to the server yet;
-// the server-side audio/STT endpoint is not implemented.
+// This firmware captures short PCM audio and uploads WAV to
+// POST /api/esp32/voice. The endpoint returns a transcript only;
+// it does not execute assistant tools or relay commands.
 constexpr i2s_port_t MIC_I2S_PORT = I2S_NUM_0;
 constexpr int MIC_BCLK_PIN = 26;
 constexpr int MIC_WS_PIN = 25;
@@ -94,11 +94,17 @@ constexpr int MIC_DATA_PIN = 33;
 constexpr uint32_t MIC_SAMPLE_RATE = 16000;
 constexpr size_t MIC_BUFFER_SAMPLES = 256;
 constexpr uint32_t MIC_REPORT_INTERVAL_MS = 500;
-constexpr uint32_t MIC_VOICE_THRESHOLD = 180; // Tune after observing Serial output
+constexpr uint32_t MIC_VOICE_THRESHOLD = 180; // Tune from Serial RMS readings
+constexpr uint32_t MIC_RECORD_SECONDS = 3;
+constexpr size_t MIC_RECORD_SAMPLES = MIC_SAMPLE_RATE * MIC_RECORD_SECONDS;
+constexpr uint32_t MIC_UPLOAD_COOLDOWN_MS = 10000;
 
 int32_t micRawBuffer[MIC_BUFFER_SAMPLES];
+uint8_t micWavBuffer[44 + MIC_RECORD_SAMPLES * 2];
 bool micReady = false;
+bool micUploadInProgress = false;
 unsigned long lastMicReportMs = 0;
+unsigned long lastVoiceUploadMs = 0;
 uint32_t micLastLevel = 0;
 
 
@@ -204,6 +210,10 @@ bP6MvPJwNQzcmRk13NfIRmPVNnGuV/u3gm3c
 bool initializeMicrophone();
 
 void processMicrophone();
+bool captureAndUploadVoice();
+void writeWavHeader(uint8_t* header, uint32_t dataSize);
+void writeLe16(uint8_t* target, uint16_t value);
+void writeLe32(uint8_t* target, uint32_t value);
 
 bool loadDeviceToken();
 
@@ -334,6 +344,142 @@ void processMicrophone() {
     Serial.print(" | ");
     Serial.println(rms >= MIC_VOICE_THRESHOLD ? "VOICE/LOUD SOUND" : "quiet");
   }
+
+  // Provisional sound-level trigger; this is not a wake-word detector.
+  if (
+    rms >= MIC_VOICE_THRESHOLD &&
+    !micUploadInProgress &&
+    millis() - lastVoiceUploadMs >= MIC_UPLOAD_COOLDOWN_MS
+  ) {
+    lastVoiceUploadMs = millis();
+    if (WiFi.status() == WL_CONNECTED && clockSynced && httpsReady) {
+      captureAndUploadVoice();
+    } else {
+      Serial.println("[VOICE] Sound detected, but network is not ready");
+    }
+  }
+}
+
+// ============================================================
+// 9B. WAV ENCODING + GEMINI TRANSCRIPTION UPLOAD
+// ============================================================
+
+void writeLe16(uint8_t* target, uint16_t value) {
+  target[0] = value & 0xFF;
+  target[1] = (value >> 8) & 0xFF;
+}
+
+void writeLe32(uint8_t* target, uint32_t value) {
+  target[0] = value & 0xFF;
+  target[1] = (value >> 8) & 0xFF;
+  target[2] = (value >> 16) & 0xFF;
+  target[3] = (value >> 24) & 0xFF;
+}
+
+void writeWavHeader(uint8_t* header, uint32_t dataSize) {
+  memcpy(header, "RIFF", 4);
+  writeLe32(header + 4, 36 + dataSize);
+  memcpy(header + 8, "WAVE", 4);
+  memcpy(header + 12, "fmt ", 4);
+  writeLe32(header + 16, 16);
+  writeLe16(header + 20, 1);
+  writeLe16(header + 22, 1);
+  writeLe32(header + 24, MIC_SAMPLE_RATE);
+  writeLe32(header + 28, MIC_SAMPLE_RATE * 2);
+  writeLe16(header + 32, 2);
+  writeLe16(header + 34, 16);
+  memcpy(header + 36, "data", 4);
+  writeLe32(header + 40, dataSize);
+}
+
+bool captureAndUploadVoice() {
+  if (!micReady || micUploadInProgress) return false;
+  micUploadInProgress = true;
+
+  Serial.println("[VOICE] Capturing 3-second audio...");
+  const size_t targetBytes = MIC_RECORD_SAMPLES * sizeof(int16_t);
+  size_t writtenSamples = 0;
+  const unsigned long captureStarted = millis();
+
+  while (writtenSamples < MIC_RECORD_SAMPLES &&
+         millis() - captureStarted < 6000) {
+    size_t bytesRead = 0;
+    esp_err_t result = i2s_read(
+      MIC_I2S_PORT,
+      micRawBuffer,
+      sizeof(micRawBuffer),
+      &bytesRead,
+      pdMS_TO_TICKS(500)
+    );
+
+    if (result != ESP_OK || bytesRead < sizeof(int32_t)) continue;
+
+    size_t count = bytesRead / sizeof(int32_t);
+    for (size_t i = 0; i < count && writtenSamples < MIC_RECORD_SAMPLES; i++) {
+      // Convert the INMP441's left-aligned 24-bit sample to signed PCM16.
+      int16_t pcm = (int16_t)(micRawBuffer[i] >> 16);
+      size_t offset = 44 + writtenSamples * 2;
+      micWavBuffer[offset] = (uint16_t)pcm & 0xFF;
+      micWavBuffer[offset + 1] = ((uint16_t)pcm >> 8) & 0xFF;
+      writtenSamples++;
+    }
+  }
+
+  if (writtenSamples != MIC_RECORD_SAMPLES) {
+    Serial.printf("[VOICE] Capture incomplete: %u/%u samples\n",
+                  (unsigned)writtenSamples, (unsigned)MIC_RECORD_SAMPLES);
+    micUploadInProgress = false;
+    return false;
+  }
+
+  writeWavHeader(micWavBuffer, targetBytes);
+
+  String url = String(SERVER_BASE) + "/api/esp32/voice";
+  http.setReuse(false);
+  http.setTimeout(25000);
+  http.setConnectTimeout(8000);
+
+  if (!http.begin(secureClient, url)) {
+    Serial.println("[VOICE] HTTPS begin failed");
+    micUploadInProgress = false;
+    return false;
+  }
+
+  http.addHeader("X-Device-Id", DEVICE_ID);
+  http.addHeader("Authorization", String("Bearer ") + deviceToken);
+  http.addHeader("Content-Type", "audio/wav");
+  http.addHeader("Accept", "application/json");
+
+  Serial.printf("[VOICE] Uploading WAV: %u bytes\n",
+                (unsigned)(44 + targetBytes));
+  int code = http.POST(micWavBuffer, 44 + targetBytes);
+  String response = code > 0 ? http.getString() : "";
+  http.end();
+
+  Serial.printf("[VOICE] HTTP status: %d\n", code);
+
+  if (code >= 200 && code < 300) {
+    StaticJsonDocument<2048> doc;
+    DeserializationError error = deserializeJson(doc, response);
+    if (!error && doc["success"] == true) {
+      const char* transcript = doc["data"]["transcript"] | "";
+      if (transcript[0] != '\0') {
+        Serial.print("[VOICE] Transcript: ");
+        Serial.println(transcript);
+      } else {
+        Serial.println("[VOICE] No intelligible speech detected");
+      }
+    } else {
+      Serial.println("[VOICE] Could not parse transcription response");
+      Serial.println(response);
+    }
+  } else {
+    Serial.println("[VOICE] Upload/transcription failed");
+    if (response.length()) Serial.println(response);
+  }
+
+  micUploadInProgress = false;
+  return code >= 200 && code < 300;
 }
 
 // ============================================================
