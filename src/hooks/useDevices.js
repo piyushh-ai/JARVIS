@@ -313,6 +313,59 @@ export function useDevices({ homeId, roomId, type, autoFetch = true } = {}) {
     setItems,
   ]);
 
+  const applySceneOutcome = useCallback(
+    ({ devices: updatedList = [], results = [] } = {}) => {
+      if (!mountedRef.current) return;
+      const nowMs = Date.now();
+      lastToggleAtRef.current = nowMs;
+
+      const updatedById = new Map();
+      for (const dev of updatedList) {
+        if (!dev?._id) continue;
+        const id = String(dev._id);
+        updatedById.set(id, dev);
+        serverDesiredRef.current.set(id, dev.desiredState);
+      }
+
+      if (updatedById.size > 0) {
+        setItems((prev) =>
+          prev.map((entry) => updatedById.get(String(entry._id)) || entry)
+        );
+      }
+
+      if (Array.isArray(results) && results.length > 0) {
+        setSyncStateByDevice((prev) => {
+          const next = { ...prev };
+          for (const res of results) {
+            if (!res?.deviceId) continue;
+            const id = String(res.deviceId);
+            const updated = updatedById.get(id);
+            if (res.status === "queued" && updated) {
+              const synced = updated.desiredState === updated.reportedState;
+              next[id] = {
+                status: synced ? "synced" : "pending_ack",
+                desiredState: updated.desiredState,
+                commandId: res.commandId || null,
+                error: null,
+                updatedAt: nowMs,
+              };
+            } else if (res.status === "failed") {
+              next[id] = {
+                status: "failed",
+                desiredState: updated?.desiredState || prev[id]?.desiredState || "off",
+                commandId: null,
+                error: res.error || "Scene command failed",
+                updatedAt: nowMs,
+              };
+            }
+          }
+          return next;
+        });
+      }
+    },
+    [setItems]
+  );
+
   return {
     devices: items,
     loading,
@@ -327,6 +380,7 @@ export function useDevices({ homeId, roomId, type, autoFetch = true } = {}) {
     createDevice: createItem,
     updateDevice: updateItem,
     toggleDevice,
+    applySceneOutcome,
     deleteDevice: deleteItem,
   };
 }

@@ -45,6 +45,10 @@ jarvis/
 │   │   │   │   ├── route.js
 │   │   │   │   └── [id]/
 │   │   │   │       └── route.js
+│   │   │   └── scenes/
+│   │   │       ├── route.js
+│   │   │       └── [sceneId]/execute/
+│   │   │           └── route.js
 │   │   ├── devices/
 │   │   │   ├── route.js
 │   │   │   └── [id]/
@@ -73,6 +77,8 @@ jarvis/
 │   │   ├── rooms/
 │   │   │   ├── RoomFormModal.jsx
 │   │   │   └── RoomManagementSection.jsx
+│   │   ├── scenes/
+│   │   │   └── SmartScenesSection.jsx
 │   │   ├── assistant/
 │   │   └── automation/
 │   ├── hooks/
@@ -92,6 +98,8 @@ jarvis/
 │   │   │   └── connect.js
 │   │   ├── hardware/
 │   │   │   └── relayModules.js
+│   │   ├── scenes/
+│   │   │   └── sceneDefinitions.js
 │   │   ├── utils/
 │   │   │   ├── apiResponse.js
 │   │   │   ├── rateLimit.js
@@ -126,7 +134,9 @@ jarvis/
 │   │   ├── deviceService.js
 │   │   ├── hardwareService.js
 │   │   ├── roomApi.js
-│   │   └── roomService.js
+│   │   ├── roomService.js
+│   │   ├── sceneApi.js
+│   │   └── sceneService.js
 │   ├── proxy.js
 │   └── types/
 ├── docs/
@@ -157,7 +167,8 @@ The primary route (`/`) delivers a mobile-first smart room HUD connected to the 
 - **MongoDB-Backed Room Management:** Lists all smart rooms in the active Home with name, description, accurate assigned device count, and per-room device chips (`RoomManagementSection`, `RoomFormModal`), supports room filtering into the devices grid, and enforces backend `409` safe deletion (blocking removal when devices remain assigned without silently deleting or reassigning devices).
 - **MongoDB-Backed Device Management & Optimistic Command Wiring:** Lists persisted devices in the active Home (`name`, `type`, room name, `connectionStatus`, `desiredState`, `reportedState`, mapped ESP32 controller ID + relay `#` or unmapped indicator), prevents duplicate relay or cross-Home controller mapping in `DeviceFormModal`, and connects device ON/OFF toggles directly to `POST /api/devices/[id]/toggle` via `useDevices().toggleDevice()`. Toggling updates UI `desiredState` optimistically (`< 16 ms` perceived response) with per-device toggle queuing, rollback on error, explicit **Pending HW ACK** / **HW Synced** / **Cmd Failed** badges, and visibility-aware adaptive background reconciliation polling (`2s` -> `5s`, `0` idle polling when synced). Backend validates an active mapped ESP32 controller & relay, supersedes stale pending commands safely with total ordering, enforces `idempotencyKey` deduplication, updates `desiredState`, queues a `pending` `Command`, and leaves `reportedState` strictly hardware-ACK-driven.
 - **ESP32 Controller Provisioning UI (`ControllerManagementSection`, `ControllerProvisionModal`):** Displays Home-scoped controllers with online/offline/awaiting-heartbeat/revoked status, `tokenPrefix`, `lastSeen`, `firmwareVersion`, Relay Channel 1 config (bench-verified reference `GPIO 13`, Active `LOW`, `safeBootState: "off"`), dual 4-channel expansion readiness (`Module A CH 1-4`, `Module B CH 5-8` unverified beyond CH 1), and mapped devices. Authorized Home owners/admins can provision controllers, view/copy the generated bearer token ONCE inside an ephemeral reveal modal, update config (`PATCH /api/esp32/controllers/[id]`), rotate tokens, or revoke compromised boards.
-- **Current QA & Performance Status:** ESLint (`npm run lint`), production build (`npm run build`), `.next/static` bundle secret scan, HTTP security headers (`next.config.mjs`), `16 KB` payload limits (`413`), Home `owner`/`admin`/`member` RBAC + diagnostics (`GET /api/diagnostics`), ESR-indexed Command polling (`69.7 ms` p50 empty poll, `72.3 ms` p50 claim vs ~1200–1300 ms pre-audit baseline) and optimistic ACK (`106.3 ms` p50 vs ~1500–1700 ms baseline), AI/Automation permissioned service seams (`src/services/ai/*`, `src/services/automation/*`), and full E2E hardware command lifecycle pass against `next start` + MongoDB Atlas. Remaining tasks: bench-verify channels 2–8, flash `ESP32-WROOM-32` firmware, live Chrome browser QA, and wire real LLM/Cron integrations.
+- **Smart Scenes (`SmartScenesSection`, `sceneService.js`, `/api/scenes/[sceneId]/execute`):** Provides one-tap HUD scene presets (**Good Morning**: Main Light ON & Mandir Light ON; **Good Night** / **Away Mode**: all devices OFF; **All Lights ON / OFF**: strictly filters `type === "light"` devices). Dynamically resolves devices from MongoDB scoped by authorized `Home`, dispatches all commands through `toggleDeviceById` (`Command` queue without modifying `reportedState`), handles HTTP `207` partial failures and `422` full failures cleanly, prevents duplicate execution via `idempotencyKey` replay + distributed `2500 ms` `RateLimit` cooldown (`409` on rapid re-triggers) + UI in-flight/cooldown locks, and feeds results into `useDevices().applySceneOutcome` for automatic ESP32 ACK reconciliation.
+- **Current QA & Performance Status:** ESLint (`npm run lint`), production build (`npm run build`), `.next/static` bundle secret scan, HTTP security headers (`next.config.mjs`), `16 KB` payload limits (`413`), Home `owner`/`admin`/`member` RBAC + diagnostics (`GET /api/diagnostics`), ESR-indexed Command polling (`69.7 ms` p50 empty poll, `72.3 ms` p50 claim vs ~1200–1300 ms pre-audit baseline) and optimistic ACK (`106.3 ms` p50 vs ~1500–1700 ms baseline), Smart Scenes E2E suite (auth/cross-home isolation, dynamic target matching across 4+ relays, duplicate `409`/idempotency `200`, HTTP `207` partial failures, ESP32 ACK lifecycle), AI/Automation permissioned service seams (`src/services/ai/*`, `src/services/automation/*`), and full E2E hardware command lifecycle pass against `next start` + MongoDB Atlas. Remaining tasks: bench-verify channels 2–8, flash `ESP32-WROOM-32` firmware, live Chrome browser QA, and wire real LLM/Cron integrations.
 
 ## Screenshots
 
@@ -291,7 +302,7 @@ A reusable client API layer connects future UI views to the Next.js Route Handle
    curl -b cookies.txt "http://localhost:3000/api/devices?roomId=<ROOM_ID>&type=light"
    ```
 
-   **Verified endpoints:** `GET /api/health`, `/api/auth/*`, `/api/homes*`, `/api/rooms*`, `/api/devices*`, `/api/commands*`, and `/api/esp32/*` are verified against MongoDB Atlas for authentication, cross-home IDOR isolation (`403`), role enforcement, validation (`400`), missing records (`404`), conflicts (`409`), and distributed rate limiting (`429`).
+   **Verified endpoints:** `GET /api/health`, `/api/auth/*`, `/api/homes*`, `/api/rooms*`, `/api/devices*`, `/api/scenes*`, `/api/commands*`, `/api/diagnostics`, and `/api/esp32/*` are verified against MongoDB Atlas for authentication, cross-home IDOR isolation (`403`), role enforcement, validation (`400`), missing records (`404`), conflicts (`409`), partial scenes (`207`), and distributed rate limiting (`429`).
 
 ## Available Scripts
 

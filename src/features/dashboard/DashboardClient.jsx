@@ -8,6 +8,7 @@ import Header from "@/components/layout/Header";
 import BottomNav from "@/components/layout/BottomNav";
 import AICore from "@/components/dashboard/AICore";
 import RoomOverview from "@/components/dashboard/RoomOverview";
+import SmartScenesSection from "@/features/scenes/SmartScenesSection";
 import RoomManagementSection from "@/features/rooms/RoomManagementSection";
 import DeviceManagementSection from "@/features/devices/DeviceManagementSection";
 import ControllerManagementSection from "@/features/controllers/ControllerManagementSection";
@@ -46,6 +47,7 @@ export default function DashboardClient({ initialAuth }) {
     createDevice,
     updateDevice,
     toggleDevice,
+    applySceneOutcome,
     deleteDevice,
   } = useDevices({
     homeId: activeHomeId,
@@ -349,6 +351,13 @@ export default function DashboardClient({ initialAuth }) {
                     ? "Backend Connection Error"
                     : "MongoDB Atlas Sync"
               }
+            />
+
+            <SmartScenesSection
+              key={activeHomeId}
+              homeId={activeHomeId}
+              devices={allDevices}
+              onSceneComplete={applySceneOutcome}
             />
 
             <RoomOverview

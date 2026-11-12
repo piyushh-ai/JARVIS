@@ -5,7 +5,7 @@
 
   Board       : ESP32 DevKit V1 / ESP32-WROOM-32
   Device ID   : ESP32-001
-  Relay 1     : GPIO 13
+  Relay 1-4   : GPIO 13, 12, 14, 15
   Relay Logic : ACTIVE LOW
 
   NVS:
@@ -51,18 +51,27 @@ const char* SERVER_BASE =
 
 const char* DEVICE_ID = "ESP32-001";
 
-const char* FIRMWARE_VERSION = "1.1.0";
+const char* FIRMWARE_VERSION = "1.2.0";
 
 // ============================================================
 // 3. RELAY CONFIGURATION
 // ============================================================
 
-constexpr uint8_t RELAY_1_PIN = 13;
+// Current physical wiring supplied by the user.
+// WARNING: GPIO12 and GPIO15 are ESP32 boot-strapping pins.
+// If boot becomes unreliable, move IN2 to GPIO26 and IN4 to GPIO27,
+// then change this array to {13, 26, 14, 27}.
+constexpr uint8_t RELAY_COUNT = 4;
+const uint8_t RELAY_PINS[RELAY_COUNT] = {
+  13, 12, 14, 15
+};
 
 constexpr uint8_t RELAY_ON = LOW;
 constexpr uint8_t RELAY_OFF = HIGH;
 
-bool relay1State = false;
+bool relayStates[RELAY_COUNT] = {
+  false, false, false, false
+};
 
 // ============================================================
 // 4. TIMING CONFIGURATION
@@ -222,18 +231,21 @@ void rememberProcessedCommand(
 // ============================================================
 
 void initializeRelays() {
+  // Initialize all four relay channels to OFF before network startup.
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    // Preload OFF level before enabling OUTPUT mode.
+    digitalWrite(RELAY_PINS[i], RELAY_OFF);
+    pinMode(RELAY_PINS[i], OUTPUT);
+    digitalWrite(RELAY_PINS[i], RELAY_OFF);
 
-  // Set safe OFF level before output mode.
+    relayStates[i] = false;
 
-  digitalWrite(RELAY_1_PIN, RELAY_OFF);
-
-  pinMode(RELAY_1_PIN, OUTPUT);
-
-  digitalWrite(RELAY_1_PIN, RELAY_OFF);
-
-  relay1State = false;
-
-  Serial.println("[RELAY] Relay 1 initialized OFF");
+    Serial.print("[RELAY] Relay ");
+    Serial.print(i + 1);
+    Serial.print(" (GPIO ");
+    Serial.print(RELAY_PINS[i]);
+    Serial.println(") initialized OFF");
+  }
 }
 
 // ============================================================
@@ -645,26 +657,21 @@ void sendHeartbeat() {
 // ============================================================
 
 bool sendBootStatus() {
-
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<512> doc;
 
   doc["bootReason"] = "power_on";
-
   JsonArray channels = doc.createNestedArray("channels");
 
-  JsonObject channel = channels.createNestedObject();
-
-  channel["relayNumber"] = 1;
-
-  channel["reportedState"] =
-    relay1State ? "on" : "off";
+  for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+    JsonObject channel = channels.createNestedObject();
+    channel["relayNumber"] = i + 1;
+    channel["reportedState"] = relayStates[i] ? "on" : "off";
+  }
 
   String body;
-
   serializeJson(doc, body);
 
   String response;
-
   int code = sendRequest(
     "/api/esp32/status",
     "POST",
@@ -680,14 +687,11 @@ bool sendBootStatus() {
   }
 
   if (code >= 200 && code < 300) {
-
-    Serial.println("[BOOT STATUS] Synced");
-
+    Serial.println("[BOOT STATUS] Four-channel status synced");
     return true;
   }
 
   Serial.println("[BOOT STATUS] Sync failed");
-
   return false;
 }
 
@@ -850,115 +854,78 @@ void executeCommand(
   int relayNumber,
   String action
 ) {
-
   action.trim();
-
   action.toLowerCase();
 
   Serial.println();
   Serial.println("========== COMMAND ==========");
-
   Serial.print("[COMMAND] ID: ");
   Serial.println(commandId);
-
   Serial.print("[COMMAND] Relay: ");
   Serial.println(relayNumber);
-
   Serial.print("[COMMAND] Action: ");
   Serial.println(action);
 
-  // ----------------------------------------------------------
-  // DUPLICATE COMMAND CHECK
-  // ----------------------------------------------------------
-
+  // Duplicate command protection.
   int cachedIndex = findProcessedCommand(commandId);
-
   if (cachedIndex >= 0) {
-
-    Serial.println("[COMMAND] Duplicate command");
-
+    Serial.println("[COMMAND] Duplicate command; re-sending ACK");
     sendAcknowledgement(
       commandId,
       commandCache[cachedIndex].reportedState,
       relayNumber
     );
-
     return;
   }
 
-  // ----------------------------------------------------------
-  // VALIDATE RELAY
-  // ----------------------------------------------------------
-
-  if (relayNumber != 1) {
-
-    Serial.println("[COMMAND] Unsupported relay");
-
+  // Validate relay number.
+  if (relayNumber < 1 || relayNumber > RELAY_COUNT) {
+    Serial.println("[COMMAND] Unsupported relay number");
     sendFailedAcknowledgement(
       commandId,
       relayNumber,
       "unsupported_relay"
     );
-
     return;
   }
 
-  // ----------------------------------------------------------
-  // VALIDATE ACTION
-  // ----------------------------------------------------------
-
-  if (
-    action != "on" &&
-    action != "off"
-  ) {
-
+  // Validate requested action.
+  if (action != "on" && action != "off") {
     Serial.println("[COMMAND] Invalid action");
-
     sendFailedAcknowledgement(
       commandId,
       relayNumber,
       "invalid_action"
     );
-
     return;
   }
 
-  // ----------------------------------------------------------
-  // SET RELAY STATE
-  // ----------------------------------------------------------
+  const uint8_t index = relayNumber - 1;
+  const bool requestedState = (action == "on");
 
-  bool requestedState = (action == "on");
-
-  // Set output immediately. Do not wait for ACK.
-
+  // Active LOW: LOW = ON, HIGH = OFF.
   digitalWrite(
-    RELAY_1_PIN,
+    RELAY_PINS[index],
     requestedState ? RELAY_ON : RELAY_OFF
   );
 
-  relay1State = requestedState;
+  relayStates[index] = requestedState;
+  const String reportedState = requestedState ? "on" : "off";
 
-  String reportedState =
-    requestedState ? "on" : "off";
-
-  // Save in RAM before sending ACK.
+  // Remember the command after applying the GPIO state.
   rememberProcessedCommand(commandId, reportedState);
 
-  Serial.print("[RELAY] Relay 1: ");
+  Serial.print("[RELAY] Relay ");
+  Serial.print(relayNumber);
+  Serial.print(" | GPIO ");
+  Serial.print(RELAY_PINS[index]);
+  Serial.print(" | State: ");
   Serial.println(reportedState);
 
-  // ----------------------------------------------------------
-  // SEND ACK
-  // ----------------------------------------------------------
-
-  sendAcknowledgement(
-    commandId,
-    reportedState,
-    relayNumber
-  );
-
+  sendAcknowledgement(commandId, reportedState, relayNumber);
   Serial.println("=============================");
 }
+
 
 // ============================================================
 // 26. POLL PENDING COMMANDS
