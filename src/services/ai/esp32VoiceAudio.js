@@ -90,7 +90,7 @@ export function parseAndPrepareVoiceWav(buffer, codecHeader = "") {
   if (!format || dataOffset < 0 || dataSize <= 0 || dataOffset + dataSize + (dataSize & 1) !== buffer.length) {
     throw audioError("WAV data chunk is missing or does not match payload", 400);
   }
-  if (format.channels !== 1) throw audioError("WAV must be mono", 415);
+  if (format.channels !== 1) throw audioError("WAV must be mono", 415);\n  if (format.blockAlign !== format.bits / 8 || format.byteRate !== format.sampleRate * format.blockAlign) {\n    throw audioError("WAV byte rate or block alignment is invalid", 400);\n  }
 
   let pcm;
   if (format.encoding === 7 && format.bits === 8 && format.sampleRate === 16000 && format.fmtLength === 16) {
