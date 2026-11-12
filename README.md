@@ -336,11 +336,11 @@ A reusable client API layer connects future UI views to the Next.js Route Handle
 
 ### ESP32 microphone voice control (INMP441)
 
-Firmware v1.5.0 uploads 8 kHz mono PCM16 WAV (0.5–4 seconds, maximum 256 KB) to `POST /api/esp32/voice`. The server uses one Gemini audio-understanding call with a lean Home device/room/scene catalog, validates every returned target against that Home, and queues commands through the existing device/scene services. Questions use the existing assistant service; direct commands do not require a second LLM call.
+Firmware v1.6.0 uploads 16 kHz mono G.711 mu-law WAV (`fmt` tag 7, `X-Audio-Codec: mulaw`, approximately 64 KB max) to `POST /api/esp32/voice`. The server decodes to normalized PCM16 WAV for Gemini and continues to accept the legacy 8 kHz PCM16 WAV format. A single Gemini call handles transcription, ON/OFF intent, Home catalog grounding, and voice-session-aware answers.
 
-The wake-word gate defaults to `jarvis` and is enabled by default. Configure `ESP32_VOICE_WAKE_WORD` (default `jarvis`) and `ESP32_VOICE_REQUIRE_WAKE_WORD` (default `true`) in Vercel. Common wake-word mishearings are accepted. Missing wake word and unintelligible/background audio return HTTP 200 with `execution: "ignored"`; ambiguous targets return `needs_clarification`.
+Voice sessions are scoped per user, Home, and ESP32 controller, continue for 15 minutes of inactivity by default, pin the first two turns, and maintain a rolling summary plus recent context. After a clarification, a short ON/OFF reply can resolve the pending target for 30 seconds without repeating the wake word. Ignored audio is not saved.
 
-The endpoint keeps the existing `X-Device-Id` + Bearer-token authentication and Home-scoped command queue. See [ESP32 Voice Control](docs/ESP32_VOICE.md).
+Commands are queued through the existing device/scene services, atomically claimed with the same lease logic as the pending-command endpoint, and returned immediately as `data.commands` so the ESP32 can execute without waiting for another poll. The existing ACK flow and `X-Device-Id` + Bearer-token authentication remain unchanged. Configure `ESP32_VOICE_SESSION_IDLE_MIN` (default 15), `GEMINI_VOICE_MODEL` (default `gemini-2.5-flash-lite`), `GEMINI_VOICE_FALLBACK_MODEL` (default `gemini-2.5-flash`), and the existing wake-word variables in Vercel. See [ESP32 Voice Control](docs/ESP32_VOICE.md).
 
 ## Available Scripts
 
@@ -359,7 +359,7 @@ JARVIS builds cleanly for Vercel's Node.js Serverless runtime without local disk
    - `MONGODB_URI` *(Required, server-only)* — Your MongoDB Atlas connection string. **Never** prefix with `NEXT_PUBLIC_`.
    - `SESSION_SECRET` *(Recommended, server-only)* — HMAC pepper for hashing `jarvis_session` cookies in MongoDB.
    - `ESP32_TOKEN_PEPPER` *(Recommended, server-only)* — HMAC pepper for hashing per-device ESP32 Bearer tokens.
-   - `GEMINI_API_KEY` / `GROQ_API_KEY` / `OPENAI_API_KEY` *(Required for live AI Assistant, server-only)* — LLM provider key (optional `AI_PROVIDER`, `AI_MODEL`, `AI_TIMEOUT_MS`).
+   - `GEMINI_API_KEY` *(Required for ESP32 audio voice, server-only)* — Gemini API key. Optional voice settings: `GEMINI_VOICE_MODEL` (`gemini-2.5-flash-lite`), `GEMINI_VOICE_FALLBACK_MODEL` (`gemini-2.5-flash`), `ESP32_VOICE_WAKE_WORD` (`jarvis`), `ESP32_VOICE_REQUIRE_WAKE_WORD` (`true`), and `ESP32_VOICE_SESSION_IDLE_MIN` (`15`).\n   - `GROQ_API_KEY` / `OPENAI_API_KEY` / `MISTRAL_API_KEY` *(Optional for text assistant, server-only)* — existing provider keys (`AI_PROVIDER`, `AI_MODEL`, `AI_TIMEOUT_MS`).
    - `NEXT_PUBLIC_API_BASE_URL` *(Optional)* — Leave unset so client requests use same-origin `/api` (`src/lib/api/client.js`).
 4. **Deploy & Verify:**
    - Trigger **Deploy** and inspect build logs.

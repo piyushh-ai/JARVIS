@@ -14,6 +14,7 @@ import {
   validateHeartbeatPayload,
 } from "@/lib/utils/validation";
 import { expireStaleCommands } from "@/services/commandService";
+import { invalidateVoiceCatalog } from "@/services/ai/esp32VoiceCache";
 
 function assertSameControllerHome(controller, homeId) {
   if (!controller?.homeId || String(controller.homeId) !== String(homeId)) {
@@ -30,6 +31,11 @@ function timingSafeEqualStrings(a, b) {
   const hashB = crypto.createHash("sha256").update(b, "utf8").digest();
   return crypto.timingSafeEqual(hashA, hashB);
 }
+
+const globalForControllerAuth = globalThis;
+if (!globalForControllerAuth._jarvisEsp32AuthCache) globalForControllerAuth._jarvisEsp32AuthCache = new Map();
+const controllerAuthCache = globalForControllerAuth._jarvisEsp32AuthCache;
+const CONTROLLER_AUTH_CACHE_MS = 15000;
 
 function hashControllerToken(rawToken) {
   const pepper = process.env.ESP32_TOKEN_PEPPER?.trim();
@@ -117,8 +123,8 @@ export async function authenticateEsp32Request(
   const clientIp = getClientIp(request);
   await connectDB();
 
-  // Execute IP brute-force throttling, per-IP+device rate limiting, and controller lookup in 1 parallel RTT.
-  const [, , controller] = await Promise.all([
+  // Rate limits remain per request; only the expensive controller/token lookup is cached.
+  await Promise.all([
     enforceRateLimit(`esp32_ip:${clientIp}`, {
       maxRequests: Math.max(maxRequests * 4, 240),
       windowMs,
@@ -127,33 +133,40 @@ export async function authenticateEsp32Request(
       deviceRateLimitKeyPrefix === "esp32_auth"
         ? `esp32_auth:${clientIp}:${esp32DeviceId}`
         : `${deviceRateLimitKeyPrefix}:${esp32DeviceId}`,
-      {
-        maxRequests,
-        windowMs,
-      }
+      { maxRequests, windowMs }
     ),
-    Controller.findOne({ esp32DeviceId })
-      .select(
-        "_id esp32DeviceId name homeId ownerId status +tokenHash +previousTokenHash previousTokenExpiresAt"
-      )
-      .lean(),
   ]);
 
   const now = new Date();
-  const matchesPrimary =
-    Boolean(controller?.tokenHash) &&
-    timingSafeEqualStrings(incomingHash, controller.tokenHash);
-  const matchesPrevious =
-    Boolean(controller?.previousTokenHash) &&
-    Boolean(controller?.previousTokenExpiresAt) &&
-    new Date(controller.previousTokenExpiresAt) > now &&
-    timingSafeEqualStrings(incomingHash, controller.previousTokenHash);
+  const cacheKey = `${esp32DeviceId}:${incomingHash}`;
+  const cachedEntry = controllerAuthCache.get(cacheKey);
+  let controller = cachedEntry && cachedEntry.expiresAt > Date.now()
+    ? cachedEntry.controller
+    : null;
 
-  if (
-    !controller ||
+  if (!controller) {
+    controllerAuthCache.delete(cacheKey);
+    controller = await Controller.findOne({ esp32DeviceId })
+      .select("_id esp32DeviceId name homeId ownerId status +tokenHash +previousTokenHash previousTokenExpiresAt")
+      .lean();
+
+    const matchesPrimary = Boolean(controller?.tokenHash) &&
+      timingSafeEqualStrings(incomingHash, controller.tokenHash);
+    const matchesPrevious = Boolean(controller?.previousTokenHash) &&
+      Boolean(controller?.previousTokenExpiresAt) &&
+      new Date(controller.previousTokenExpiresAt) > now &&
+      timingSafeEqualStrings(incomingHash, controller.previousTokenHash);
+
+    if (!controller || controller.status !== "active" || (!matchesPrimary && !matchesPrevious)) {
+      throw new ServiceError("Invalid or revoked ESP32 credentials", 401);
+    }
+    controllerAuthCache.set(cacheKey, { controller, expiresAt: Date.now() + CONTROLLER_AUTH_CACHE_MS });
+  } else if (
     controller.status !== "active" ||
-    (!matchesPrimary && !matchesPrevious)
+    (controller.previousTokenHash === incomingHash &&
+      (!controller.previousTokenExpiresAt || new Date(controller.previousTokenExpiresAt) <= now))
   ) {
+    controllerAuthCache.delete(cacheKey);
     throw new ServiceError("Invalid or revoked ESP32 credentials", 401);
   }
 
@@ -331,6 +344,7 @@ export async function revokeController(
     { returnDocument: "after" }
   ).lean();
 
+  invalidateVoiceCatalog(homeId);
   const offlineRes = await Device.updateMany(
     { esp32DeviceId: updated.esp32DeviceId, homeId: updated.homeId },
     { $set: { connectionStatus: "offline", updatedAt: now } }
@@ -388,6 +402,7 @@ export async function recordHeartbeat(
     expireStaleCommands({ esp32DeviceId: controller.esp32DeviceId, now }),
   ]);
 
+  invalidateVoiceCatalog(String(controller.homeId));
   const pendingCommandCount = await Command.countDocuments({
     esp32DeviceId: controller.esp32DeviceId,
     status: "pending",

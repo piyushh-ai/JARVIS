@@ -1,4 +1,5 @@
 import { connectDB } from "@/lib/db/connect";
+import { invalidateVoiceCatalog } from "@/services/ai/esp32VoiceCache";
 import Room from "@/models/Room";
 import Device from "@/models/Device";
 import { ServiceError } from "@/lib/utils/apiResponse";
@@ -35,6 +36,7 @@ export async function createRoom(payload, { homeId, ownerId } = {}) {
     homeId,
     ownerId,
   });
+  invalidateVoiceCatalog(homeId);
   return room.toObject();
 }
 
@@ -70,6 +72,7 @@ export async function updateRoomById(id, payload, { homeId } = {}) {
     { returnDocument: "after", runValidators: true }
   ).lean();
 
+  invalidateVoiceCatalog(homeId);
   return updated;
 }
 
@@ -93,5 +96,6 @@ export async function deleteRoomById(id, { homeId } = {}) {
   }
 
   await Room.findByIdAndDelete(id);
+  invalidateVoiceCatalog(homeId);
   return existing;
 }

@@ -3,6 +3,7 @@ import Command from "@/models/Command";
 import Controller from "@/models/Controller";
 import Device from "@/models/Device";
 import { ServiceError } from "@/lib/utils/apiResponse";
+import { invalidateVoiceCatalog } from "@/services/ai/esp32VoiceCache";
 import {
   assertValidCommandId,
   assertValidObjectId,

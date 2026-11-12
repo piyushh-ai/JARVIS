@@ -11,6 +11,7 @@ import {
   validateUpdateDevicePayload,
 } from "@/lib/utils/validation";
 import { enqueueCommand } from "@/services/commandService";
+import { invalidateVoiceCatalog } from "@/services/ai/esp32VoiceCache";
 
 function assertSameHome(doc, homeId, resourceLabel = "Resource") {
   if (!doc.homeId || String(doc.homeId) !== String(homeId)) {
@@ -106,6 +107,7 @@ export async function createDevice(payload, { homeId, ownerId } = {}) {
     ownerId,
   });
 
+  invalidateVoiceCatalog(homeId);
   return device.toObject();
 }
 
@@ -183,6 +185,7 @@ export async function updateDeviceById(
     { returnDocument: "after", runValidators: true }
   ).lean();
 
+  invalidateVoiceCatalog(homeId);
   return updated;
 }
 
@@ -231,6 +234,7 @@ export async function toggleDeviceById(
         { returnDocument: "after", runValidators: true }
       ).lean();
 
+  invalidateVoiceCatalog(homeId);
   return {
     device: updatedDevice,
     command,
@@ -250,5 +254,6 @@ export async function deleteDeviceById(id, { homeId } = {}) {
   assertSameHome(existing, homeId, "Device");
 
   await Device.findByIdAndDelete(id);
+  invalidateVoiceCatalog(homeId);
   return existing;
 }
